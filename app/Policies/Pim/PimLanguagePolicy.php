@@ -1,0 +1,108 @@
+<?php
+
+namespace App\Policies\Pim;
+
+use App\Models\Pim\PimLanguage;
+use App\Models\User;
+use Illuminate\Auth\Access\HandlesAuthorization;
+
+class PimLanguagePolicy
+{
+    use HandlesAuthorization;
+
+    /**
+     * Determine whether the user can view any models.
+     */
+    public function viewAny(User $user): bool
+    {
+        return $user->can('view_any_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can view the model.
+     */
+    public function view(User $user, PimLanguage $pimLanguage): bool
+    {
+        return $user->can('view_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can create models.
+     */
+    public function create(User $user): bool
+    {
+        return $user->can('create_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can update the model.
+     */
+    public function update(User $user, PimLanguage $pimLanguage): bool
+    {
+        return $user->can('update_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can delete the model.
+     */
+    public function delete(User $user, PimLanguage $pimLanguage): bool
+    {
+        return $user->can('delete_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can bulk delete.
+     */
+    public function deleteAny(User $user): bool
+    {
+        return $user->can('delete_any_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can permanently delete.
+     */
+    public function forceDelete(User $user, PimLanguage $pimLanguage): bool
+    {
+        return $user->can('force_delete_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can permanently bulk delete.
+     */
+    public function forceDeleteAny(User $user): bool
+    {
+        return $user->can('force_delete_any_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can restore.
+     */
+    public function restore(User $user, PimLanguage $pimLanguage): bool
+    {
+        return $user->can('restore_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can bulk restore.
+     */
+    public function restoreAny(User $user): bool
+    {
+        return $user->can('restore_any_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can replicate.
+     */
+    public function replicate(User $user, PimLanguage $pimLanguage): bool
+    {
+        return $user->can('replicate_pim::pim::language');
+    }
+
+    /**
+     * Determine whether the user can reorder.
+     */
+    public function reorder(User $user): bool
+    {
+        return $user->can('reorder_pim::pim::language');
+    }
+}
