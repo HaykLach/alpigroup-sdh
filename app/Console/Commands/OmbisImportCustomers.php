@@ -9,7 +9,7 @@ use App\Services\CustomerImportService;
 use Illuminate\Console\Command;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
-use SmartDato\Ombis\Sdk\OmbisSdk;
+use SmartDato\Ombis\Ombis;
 use Throwable;
 
 class OmbisImportCustomers extends Command
@@ -18,8 +18,9 @@ class OmbisImportCustomers extends Command
 
     protected $description = 'Import customers from Ombis';
 
+    protected Ombis $connector;
+
     public function __construct(
-        private readonly OmbisSdk $ombisSdk,
         private readonly CustomerImportService $customerImportService,
         private readonly CustomerImportRepository $customerImportRepository,
         private readonly LoggerInterface $logger,
@@ -54,8 +55,9 @@ class OmbisImportCustomers extends Command
 
         $listPath = $directory.DIRECTORY_SEPARATOR.$fileName;
 
+        $this->connector = new Ombis();
         try {
-            $this->ombisSdk->requestCustomers($listPath);
+            $this->connector->requestCustomers($listPath);
         } catch (Throwable $exception) {
             $this->logger->error('Failed to request Ombis customer list.', [
                 'directory' => $directory,
@@ -67,9 +69,9 @@ class OmbisImportCustomers extends Command
             return Command::FAILURE;
         }
 
-        $importId = $this->customerImportRepository->insert($directory, $fileName, 'pending');
+        $customerImport = $this->customerImportRepository->insert($directory, $fileName, 'pending');
         $this->logger->info('Customer list downloaded.', [
-            'import_id' => $importId,
+            'import_id' => $customerImport->id,
             'directory' => $directory,
             'file' => $listPath,
         ]);
@@ -94,19 +96,17 @@ class OmbisImportCustomers extends Command
                 $detailPath = null;
 
                 try {
-                    $detailFileName = $this->ombisSdk->requestCustomerDetail($customerId, $directory);
-                    $detailPath = $directory.DIRECTORY_SEPARATOR.$detailFileName;
+                    $detailFileName = $this->connector->requestCustomerDetail($customerId, $directory);
 
-                    $detailPayload = $this->customerImportService->decodeJsonFile($detailPath);
+                    $detailPayload = $this->customerImportService->decodeJsonFile($detailFileName);
                     $normalizedDetails[] = $this->customerImportService->formatCustomerDetail($detailPayload);
 
                     ++$fetched;
 
                     $this->logger->info('Fetched customer detail.', [
-                        'import_id' => $importId,
+                        'import_id' => $customerImport->id,
                         'customer_id' => $customerId,
                         'directory' => $directory,
-                        'file' => $detailPath,
                         'detail_file' => $detailFileName,
                     ]);
                 } catch (Throwable $exception) {
@@ -114,7 +114,7 @@ class OmbisImportCustomers extends Command
                     $status = 'failed';
 
                     $this->logger->error('Failed to fetch customer detail.', [
-                        'import_id' => $importId,
+                        'import_id' => $customerImport->id,
                         'customer_id' => $customerId,
                         'directory' => $directory,
                         'file' => $detailPath,
@@ -127,15 +127,15 @@ class OmbisImportCustomers extends Command
             $status = 'failed';
 
             $this->logger->error('Failed to process customer list.', [
-                'import_id' => $importId,
+                'import_id' => $customerImport->id,
                 'directory' => $directory,
                 'file' => $listPath,
                 'exception' => $exception->getMessage(),
             ]);
             $this->error(sprintf('Failed to process customer list: %s', $exception->getMessage()));
 
-            $this->customerImportRepository->updateStatus($importId, $status);
-            $this->renderSummary($importId, $directory, $fileName, $customerIdsCount, $fetched, $failures);
+            $this->customerImportRepository->updateStatus($customerImport->id, $status);
+            $this->renderSummary($customerImport->id, $directory, $fileName, $customerIdsCount, $fetched, $failures);
 
             return Command::FAILURE;
         }
@@ -144,16 +144,16 @@ class OmbisImportCustomers extends Command
             $status = 'failed';
         }
 
-        $this->customerImportRepository->updateStatus($importId, $status);
+        $this->customerImportRepository->updateStatus($customerImport->id, $status);
 
         if (! empty($normalizedDetails)) {
             $this->logger->debug('Formatted customer details prepared.', [
-                'import_id' => $importId,
+                'import_id' => $customerImport->id,
                 'count' => count($normalizedDetails),
             ]);
         }
 
-        $this->renderSummary($importId, $directory, $fileName, $customerIdsCount, $fetched, $failures);
+        $this->renderSummary($customerImport->id, $directory, $fileName, $customerIdsCount, $fetched, $failures);
 
         return $status === 'success' ? Command::SUCCESS : Command::FAILURE;
     }
@@ -166,7 +166,7 @@ class OmbisImportCustomers extends Command
             return $normalized === '' ? DIRECTORY_SEPARATOR : $normalized;
         }
 
-        return storage_path('app/ombis/customers/'.now()->format('Ymd_His'));
+        return 'ombis_customers/upload';
     }
 
     private function resolveFileName(mixed $fileName): string
@@ -175,7 +175,7 @@ class OmbisImportCustomers extends Command
             return $fileName;
         }
 
-        return 'customers.json';
+        return 'customers_' . now()->format('Ymd_His') . '.json';
     }
 
     private function resolveLimit(mixed $limit): ?int
@@ -202,7 +202,7 @@ class OmbisImportCustomers extends Command
     }
 
     private function renderSummary(
-        int $importId,
+        string $importId,
         string $directory,
         string $fileName,
         int $customerIdsCount,

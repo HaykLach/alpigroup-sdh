@@ -23,7 +23,7 @@ return new class extends Migration
             $table->foreignUuid('customer_import_id')
                 ->after('id')
                 ->references('id')
-                ->on('customer_imports')
+                ->on('customer_import')
                 ->cascadeOnDelete();
         });
     }

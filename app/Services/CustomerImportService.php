@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Services;
 
 use RuntimeException;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Contracts\Filesystem\FileNotFoundException;
 
 class CustomerImportService
 {
@@ -22,21 +24,37 @@ class CustomerImportService
     /**
      * @return array<string, mixed>
      */
-    public function decodeJsonFile(string $path): array
+    public function decodeJsonFile(string $path, ?string $disk = null): array
     {
-        if (! is_readable($path)) {
-            throw new RuntimeException(sprintf('JSON file is not readable: %s', $path));
+        $fs = $disk ? Storage::disk($disk) : Storage::disk(config('filesystems.default'));
+
+        // Existence check (works across all drivers)
+        if (! $fs->exists($path)) {
+            throw new RuntimeException(sprintf('JSON file not found on storage: %s', $path));
         }
 
-        $contents = file_get_contents($path);
-        if ($contents === false) {
-            throw new RuntimeException(sprintf('Unable to read JSON file: %s', $path));
+        try {
+            $contents = $fs->get($path);
+        } catch (FileNotFoundException $e) {
+            throw new RuntimeException(sprintf('JSON file not found on storage: %s', $path), 0, $e);
+        } catch (\Throwable $e) {
+            throw new RuntimeException(sprintf('Unable to read JSON file from storage %s: %s', $path, $e->getMessage()), 0, $e);
         }
+
+        if ($contents === '' || $contents === null) {
+            throw new RuntimeException(sprintf('JSON file is empty: %s', $path));
+        }
+
+        $contents = preg_replace('/^\xEF\xBB\xBF/', '', $contents);
 
         try {
             $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
         } catch (\JsonException $exception) {
-            throw new RuntimeException(sprintf('Invalid JSON in file %s: %s', $path, $exception->getMessage()), 0, $exception);
+            throw new RuntimeException(
+                sprintf('Invalid JSON in file %s: %s', $path, $exception->getMessage()),
+                0,
+                $exception
+            );
         }
 
         if (! is_array($decoded)) {
@@ -51,22 +69,13 @@ class CustomerImportService
      */
     public function extractCustomerIds(array $payload): array
     {
-        if (! isset($payload['Data']) || ! is_array($payload['Data'])) {
-            return [];
-        }
-
         $ids = [];
-        foreach ($payload['Data'] as $item) {
+        foreach ($payload as $item) {
             if (! is_array($item)) {
                 continue;
             }
 
-            $fields = $item['Fields'] ?? null;
-            if (! is_array($fields)) {
-                continue;
-            }
-
-            $id = $fields['ID'] ?? null;
+            $id = $item['ID'] ?? null;
             if ($id === null || $id === '') {
                 continue;
             }
@@ -104,6 +113,11 @@ class CustomerImportService
 
         $number = $fields['Nummer'] ?? null;
         $searchTerm = $fields['Suchbegriff'] ?? null;
+
+        $companyName = $fields['DisplayName'];
+        $email = $fields['ERecEMail'];
+        $createdAt = $fields['CreationTime'];
+        $updatedAt = $fields['LastUpdateTime'];
 
         return [
             'id' => $id,
