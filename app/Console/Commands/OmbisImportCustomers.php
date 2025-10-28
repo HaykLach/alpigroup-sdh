@@ -34,6 +34,12 @@ class OmbisImportCustomers extends Command
 
     private Ombis $connector;
 
+    private array $cachePaymentMethod = [];
+    private array $cacheCurrencyByCustomer = [];
+    private array $cacheBillingAddrByCustomer = [];
+    private array $cacheShippingAddrByCustomer = [];
+    private array $cacheDeliveryAddrById = [];
+
     public function handle(): int
     {
         $this->connector = new Ombis();
@@ -215,29 +221,44 @@ class OmbisImportCustomers extends Command
             return null;
         }
 
-        return $this->fetchResource(
-            fn () => $this->connector->requestPaymentMethod($paymentId),
-            'payment method',
-            $folderName
-        );
+        $resource = $this->getPaymentMethod($paymentId, 200);
+
+        if ($resource === null) {
+            Log::warning('Invalid response received for Ombis customer reference.', [
+                'customer_folder' => $folderName,
+                'resource' => 'payment method',
+            ]);
+        }
+
+        return $resource;
     }
 
     private function fetchCurrency(int|string $customerId, string $folderName): ?array
     {
-        return $this->fetchResource(
-            fn () => $this->connector->requestCustomerCurrency($customerId),
-            'currency',
-            $folderName
-        );
+        $resource = $this->getCurrencyByCustomer($customerId, 200);
+
+        if ($resource === null) {
+            Log::warning('Invalid response received for Ombis customer reference.', [
+                'customer_folder' => $folderName,
+                'resource' => 'currency',
+            ]);
+        }
+
+        return $resource;
     }
 
     private function fetchBillingAddress(int|string $customerId, string $folderName): ?array
     {
-        return $this->fetchResource(
-            fn () => $this->connector->requestCustomerBillingAddress($customerId),
-            'billing address',
-            $folderName
-        );
+        $resource = $this->getBillingAddressByCustomer($customerId, 200);
+
+        if ($resource === null) {
+            Log::warning('Invalid response received for Ombis customer reference.', [
+                'customer_folder' => $folderName,
+                'resource' => 'billing address',
+            ]);
+        }
+
+        return $resource;
     }
 
     private function fetchShippingAddress(int|string $customerId, string $folderName, array $fields): ?array
@@ -246,11 +267,16 @@ class OmbisImportCustomers extends Command
             $this->warn(sprintf('Customer %s has no preferred or postal shipping reference.', $folderName));
         }
 
-        return $this->fetchResource(
-            fn () => $this->connector->requestCustomerShippingAddress($customerId),
-            'shipping address',
-            $folderName
-        );
+        $resource = $this->getShippingAddressByCustomer($customerId, 200);
+
+        if ($resource === null) {
+            Log::warning('Invalid response received for Ombis customer reference.', [
+                'customer_folder' => $folderName,
+                'resource' => 'shipping address',
+            ]);
+        }
+
+        return $resource;
     }
 
     /**
@@ -267,69 +293,239 @@ class OmbisImportCustomers extends Command
         $addresses = [];
 
         foreach ($references as $reference) {
-            $address = $this->fetchResource(
-                fn () => $this->connector->requestDeliveryAddress($reference),
-                sprintf('delivery address %s', $reference),
-                $folderName
-            );
+            $label = sprintf('delivery address %s', $reference);
+            $address = $this->getDeliveryAddressById($reference, 200);
 
             if ($address !== null) {
                 $addresses[$reference] = $address;
+                continue;
             }
-        }
 
-        return $addresses === [] ? null : $addresses;
-    }
-
-    private function fetchResource(callable $callback, string $label, string $folderName): ?array
-    {
-        try {
-            $response = $callback();
-        } catch (Throwable $exception) {
-            Log::warning('Failed to request Ombis customer reference.', [
-                'customer_folder' => $folderName,
-                'resource' => $label,
-                'exception' => $exception->getMessage(),
-            ]);
-
-            return null;
-        } finally {
-            usleep(200_000);
-        }
-
-        $normalized = $this->normalizeResponse($response);
-
-        if ($normalized === null) {
             Log::warning('Invalid response received for Ombis customer reference.', [
                 'customer_folder' => $folderName,
                 'resource' => $label,
             ]);
         }
 
-        return $normalized;
+        return $addresses === [] ? null : $addresses;
     }
 
-    private function normalizeResponse(array|string $response): ?array
+    private function toArray(mixed $data): ?array
     {
-        if (is_array($response)) {
-            return $response;
+        if (is_array($data)) {
+            return $data;
         }
 
-        if (! is_string($response) || $response === '') {
+        if (is_string($data)) {
+            try {
+                $decoded = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
+
+                return is_array($decoded) ? $decoded : null;
+            } catch (Throwable $exception) {
+                Log::warning('Ombis decode failed', [
+                    'err' => $exception->getMessage(),
+                ]);
+
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private function getPaymentMethod(int|string $paymentId, int $sleepMs = 0): ?array
+    {
+        $key = (string) $paymentId;
+
+        if ($key === '') {
             return null;
+        }
+
+        if (array_key_exists($key, $this->cachePaymentMethod)) {
+            return $this->cachePaymentMethod[$key];
         }
 
         try {
-            $decoded = json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+            $raw = $this->connector->requestPaymentMethod($paymentId);
         } catch (Throwable $exception) {
-            Log::warning('Unable to decode Ombis response.', [
-                'exception' => $exception->getMessage(),
+            Log::warning('Ombis payment method request failed', [
+                'id' => $paymentId,
+                'err' => $exception->getMessage(),
             ]);
+
+            $this->cachePaymentMethod[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
 
             return null;
         }
 
-        return is_array($decoded) ? $decoded : null;
+        $decoded = $this->toArray($raw);
+        $this->cachePaymentMethod[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    private function getCurrencyByCustomer(int|string $customerId, int $sleepMs = 0): ?array
+    {
+        $key = (string) $customerId;
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (array_key_exists($key, $this->cacheCurrencyByCustomer)) {
+            return $this->cacheCurrencyByCustomer[$key];
+        }
+
+        try {
+            $raw = $this->connector->requestCustomerCurrency($customerId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis currency request failed', [
+                'customerId' => $customerId,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheCurrencyByCustomer[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheCurrencyByCustomer[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    private function getBillingAddressByCustomer(int|string $customerId, int $sleepMs = 0): ?array
+    {
+        $key = (string) $customerId;
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (array_key_exists($key, $this->cacheBillingAddrByCustomer)) {
+            return $this->cacheBillingAddrByCustomer[$key];
+        }
+
+        try {
+            $raw = $this->connector->requestCustomerBillingAddress($customerId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis billing address request failed', [
+                'customerId' => $customerId,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheBillingAddrByCustomer[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheBillingAddrByCustomer[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    private function getShippingAddressByCustomer(int|string $customerId, int $sleepMs = 0): ?array
+    {
+        $key = (string) $customerId;
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (array_key_exists($key, $this->cacheShippingAddrByCustomer)) {
+            return $this->cacheShippingAddrByCustomer[$key];
+        }
+
+        try {
+            $raw = $this->connector->requestCustomerShippingAddress($customerId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis shipping address request failed', [
+                'customerId' => $customerId,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheShippingAddrByCustomer[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheShippingAddrByCustomer[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    private function getDeliveryAddressById(int|string $addressId, int $sleepMs = 0): ?array
+    {
+        $key = (string) $addressId;
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (array_key_exists($key, $this->cacheDeliveryAddrById)) {
+            return $this->cacheDeliveryAddrById[$key];
+        }
+
+        try {
+            $raw = $this->connector->requestDeliveryAddress($addressId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis delivery address request failed', [
+                'id' => $addressId,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheDeliveryAddrById[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheDeliveryAddrById[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
     }
 
     private function writeResource(string $relativePath, ?array $data, string $folderName, string $resource): void
