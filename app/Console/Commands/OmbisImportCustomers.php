@@ -12,7 +12,7 @@ use Throwable;
 
 class OmbisImportCustomers extends Command
 {
-    protected $signature = 'ombis:customers:import';
+    protected $signature = 'ombis:customer-references:import';
 
     protected $description = 'Fetch Ombis customer references and store them locally.';
 
@@ -45,7 +45,7 @@ class OmbisImportCustomers extends Command
         $this->connector = new Ombis();
 
         $rootPath = storage_path('app/customers');
-        if (! is_dir($rootPath)) {
+        if (!is_dir($rootPath)) {
             $this->error(sprintf('Customers directory not found at %s', $rootPath));
 
             return Command::FAILURE;
@@ -63,10 +63,10 @@ class OmbisImportCustomers extends Command
 
         foreach ($customerDirectories as $directory) {
             $folderName = basename($directory);
-            $relativeCustomerPath = 'customers'.DIRECTORY_SEPARATOR.$folderName;
-            $detailsRelativePath = $relativeCustomerPath.DIRECTORY_SEPARATOR.self::DETAILS_FILE;
+            $relativeCustomerPath = 'customers' . DIRECTORY_SEPARATOR . $folderName;
+            $detailsRelativePath = $relativeCustomerPath . DIRECTORY_SEPARATOR . self::DETAILS_FILE;
 
-            if (! Storage::disk('local')->exists($detailsRelativePath)) {
+            if (!Storage::disk('local')->exists($detailsRelativePath)) {
                 ++$skipped;
                 $this->warn(sprintf('Skipping %s: %s missing.', $folderName, self::DETAILS_FILE));
                 continue;
@@ -91,7 +91,7 @@ class OmbisImportCustomers extends Command
             $paymentId = $this->extractIdentifier($fields['Zahlungsart'] ?? null);
             $deliveryReferences = $this->normalizeDeliveryReferences($fields['Lieferadresse'] ?? []);
 
-            $refsRelativePath = $relativeCustomerPath.DIRECTORY_SEPARATOR.self::REFS_DIRECTORY;
+            $refsRelativePath = $relativeCustomerPath . DIRECTORY_SEPARATOR . self::REFS_DIRECTORY;
             Storage::disk('local')->makeDirectory($refsRelativePath);
 
             $paymentMethod = $this->fetchPaymentMethod($paymentId, $folderName);
@@ -100,11 +100,11 @@ class OmbisImportCustomers extends Command
             $shipping = $this->fetchShippingAddress($customerId, $folderName, $fields);
             $delivery = $this->fetchDeliveryAddresses($deliveryReferences, $folderName);
 
-            $this->writeResource($refsRelativePath.DIRECTORY_SEPARATOR.self::PAYMENT_METHOD_FILE, $paymentMethod, $folderName, 'payment method');
-            $this->writeResource($refsRelativePath.DIRECTORY_SEPARATOR.self::CURRENCY_FILE, $currency, $folderName, 'currency');
-            $this->writeResource($refsRelativePath.DIRECTORY_SEPARATOR.self::BILLING_ADDRESS_FILE, $billing, $folderName, 'billing address');
-            $this->writeResource($refsRelativePath.DIRECTORY_SEPARATOR.self::SHIPPING_ADDRESS_FILE, $shipping, $folderName, 'shipping address');
-            $this->writeResource($refsRelativePath.DIRECTORY_SEPARATOR.self::DELIVERY_ADDRESSES_FILE, $delivery, $folderName, 'delivery addresses');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::PAYMENT_METHOD_FILE, $paymentMethod, $folderName, 'payment method');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::CURRENCY_FILE, $currency, $folderName, 'currency');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::BILLING_ADDRESS_FILE, $billing, $folderName, 'billing address');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::SHIPPING_ADDRESS_FILE, $shipping, $folderName, 'shipping address');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::DELIVERY_ADDRESSES_FILE, $delivery, $folderName, 'delivery addresses');
 
             $references = [
                 'payment_method' => $paymentMethod,
@@ -114,7 +114,7 @@ class OmbisImportCustomers extends Command
                 'delivery_addresses' => $delivery,
             ];
 
-            $this->writeSummary($refsRelativePath.DIRECTORY_SEPARATOR.self::REFERENCES_FILE, $references, $folderName);
+            $this->writeSummary($refsRelativePath . DIRECTORY_SEPARATOR . self::REFERENCES_FILE, $references, $folderName);
 
             ++$processed;
         }
@@ -129,7 +129,7 @@ class OmbisImportCustomers extends Command
      */
     private function discoverCustomerDirectories(string $rootPath): array
     {
-        $directories = glob($rootPath.DIRECTORY_SEPARATOR.'customer_*', GLOB_ONLYDIR);
+        $directories = glob($rootPath . DIRECTORY_SEPARATOR . 'customer_*', GLOB_ONLYDIR);
 
         if ($directories === false) {
             return [];
@@ -174,10 +174,10 @@ class OmbisImportCustomers extends Command
         }
 
         if (is_int($value) || (is_string($value) && ctype_digit($value))) {
-            return (string) $value;
+            return (string)$value;
         }
 
-        if (! is_string($value)) {
+        if (!is_string($value)) {
             return null;
         }
 
@@ -197,7 +197,7 @@ class OmbisImportCustomers extends Command
             $references = [$references];
         }
 
-        if (! is_array($references)) {
+        if (!is_array($references)) {
             return [];
         }
 
@@ -335,7 +335,7 @@ class OmbisImportCustomers extends Command
 
     private function getPaymentMethod(int|string $paymentId, int $sleepMs = 0): ?array
     {
-        $key = (string) $paymentId;
+        $key = (string)$paymentId;
 
         if ($key === '') {
             return null;
@@ -374,7 +374,7 @@ class OmbisImportCustomers extends Command
 
     private function getCurrencyByCustomer(int|string $customerId, int $sleepMs = 0): ?array
     {
-        $key = (string) $customerId;
+        $key = (string)$customerId;
 
         if ($key === '') {
             return null;
@@ -413,7 +413,7 @@ class OmbisImportCustomers extends Command
 
     private function getBillingAddressByCustomer(int|string $customerId, int $sleepMs = 0): ?array
     {
-        $key = (string) $customerId;
+        $key = (string)$customerId;
 
         if ($key === '') {
             return null;
@@ -452,7 +452,7 @@ class OmbisImportCustomers extends Command
 
     private function getShippingAddressByCustomer(int|string $customerId, int $sleepMs = 0): ?array
     {
-        $key = (string) $customerId;
+        $key = (string)$customerId;
 
         if ($key === '') {
             return null;
@@ -491,7 +491,7 @@ class OmbisImportCustomers extends Command
 
     private function getDeliveryAddressById(int|string $addressId, int $sleepMs = 0): ?array
     {
-        $key = (string) $addressId;
+        $key = (string)$addressId;
 
         if ($key === '') {
             return null;
