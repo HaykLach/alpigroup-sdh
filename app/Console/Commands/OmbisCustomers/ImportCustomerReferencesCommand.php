@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Console\Commands;
+namespace App\Console\Commands\OmbisCustomers;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Storage;
 use SmartDato\Ombis\Ombis;
 use Throwable;
 
-class OmbisImportCustomers extends Command
+class ImportCustomerReferencesCommand extends Command
 {
     protected $signature = 'ombis:customer-references:import';
 

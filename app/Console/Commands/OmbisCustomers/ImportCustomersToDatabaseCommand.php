@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace App\Console\Commands;
+namespace App\Console\Commands\OmbisCustomers;
 
 use App\Services\Ombis\CustomerImporter;
 use App\Services\Ombis\DTO\ImportResultDTO;
 use App\Services\Ombis\DTO\ImportSummaryDTO;
 use Illuminate\Console\Command;
 
-final class ImportOmbisCustomerCommand extends Command
+final class ImportCustomersToDatabaseCommand extends Command
 {
     protected $signature = 'ombis:import-customer {customerId?} {--all}';
 
