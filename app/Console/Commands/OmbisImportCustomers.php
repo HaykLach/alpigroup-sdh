@@ -16,7 +16,7 @@ class OmbisImportCustomers extends Command
 
     protected $description = 'Fetch Ombis customer references and store them locally.';
 
-    private const DETAILS_FILE = 'customer_details.json';
+    private const DETAILS_FILE = 'customer-details.json';
 
     private const REFS_DIRECTORY = 'refs';
 
@@ -44,7 +44,7 @@ class OmbisImportCustomers extends Command
     {
         $this->connector = new Ombis();
 
-        $rootPath = storage_path('app/customers');
+        $rootPath = Storage::path('ombis_customers/upload');
         if (!is_dir($rootPath)) {
             $this->error(sprintf('Customers directory not found at %s', $rootPath));
 
@@ -63,8 +63,8 @@ class OmbisImportCustomers extends Command
 
         foreach ($customerDirectories as $directory) {
             $folderName = basename($directory);
-            $relativeCustomerPath = 'customers' . DIRECTORY_SEPARATOR . $folderName;
-            $detailsRelativePath = $relativeCustomerPath . DIRECTORY_SEPARATOR . self::DETAILS_FILE;
+            $relativeCustomerPath = $folderName;
+            $detailsRelativePath = 'ombis_customers/upload/' . $folderName . DIRECTORY_SEPARATOR . self::DETAILS_FILE;
 
             if (!Storage::disk('local')->exists($detailsRelativePath)) {
                 ++$skipped;
@@ -91,7 +91,7 @@ class OmbisImportCustomers extends Command
             $paymentId = $this->extractIdentifier($fields['Zahlungsart'] ?? null);
             $deliveryReferences = $this->normalizeDeliveryReferences($fields['Lieferadresse'] ?? []);
 
-            $refsRelativePath = $relativeCustomerPath . DIRECTORY_SEPARATOR . self::REFS_DIRECTORY;
+            $refsRelativePath = 'ombis_customers/upload/' . $relativeCustomerPath . DIRECTORY_SEPARATOR . self::REFS_DIRECTORY;
             Storage::disk('local')->makeDirectory($refsRelativePath);
 
             $paymentMethod = $this->fetchPaymentMethod($paymentId, $folderName);
