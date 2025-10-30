@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Ombis;
 
 use App\Enums\Pim\PimCustomerCustomFields;
+use App\Enums\Pim\PimCustomerType;
 use App\Models\Pim\Country\PimCountry;
 use App\Models\Pim\Customer\PimCustomer;
 use App\Models\Pim\Customer\PimCustomerAddress;
@@ -25,6 +26,7 @@ final class CustomerImporter
     private const BILLING_FILE = 'billing_address.json';
     private const SHIPPING_FILE = 'shipping_address.json';
     private const PAYMENT_FILE = 'payment_method.json';
+    private const CURRENCY_FILE = 'currency.json';
 
     /**
      * @var array<int, string>|null
@@ -57,7 +59,7 @@ final class CustomerImporter
         $disk = Storage::disk('local');
         $directory = self::BASE_PATH . '/customer_' . $customerId;
 
-        if (!$disk->directoryExists($directory)) {
+        if (! $disk->directoryExists($directory)) {
             $message = sprintf('Customer directory not found at %s.', $directory);
             Log::warning('Ombis customer import directory missing.', [
                 'customer_id' => $customerId,
@@ -67,52 +69,60 @@ final class CustomerImporter
             $this->setSection($result, 'billing', 'warning', 'missing directory');
             $this->setSection($result, 'shipping', 'warning', 'missing directory');
             $this->setSection($result, 'payment', 'warning', 'missing directory');
+            $this->setSection($result, 'currency', 'warning', 'missing directory');
 
             return $result;
         }
 
-        $billingPath = $directory . '/' . self::BILLING_FILE;
-        $shippingPath = $directory . '/' . self::SHIPPING_FILE;
-        $paymentPath = $directory . '/' . self::PAYMENT_FILE;
+        $billingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::BILLING_FILE, 'billing');
+        $shippingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::SHIPPING_FILE, 'shipping');
+        $paymentPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::PAYMENT_FILE, 'payment');
+        $currencyPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::CURRENCY_FILE, 'currency');
 
-        $billingPayload = $this->loadJsonForSection($result, $customerId, $billingPath, 'billing');
-        $shippingPayload = $this->loadJsonForSection($result, $customerId, $shippingPath, 'shipping');
-        $paymentPayload = $this->loadJsonForSection($result, $customerId, $paymentPath, 'payment');
+        $billingFields = $this->extractFields($billingPayload);
+        $shippingFields = $this->extractFields($shippingPayload);
+        $paymentFields = $this->extractFields($paymentPayload);
+        $currencyFields = $this->extractFields($currencyPayload);
 
         try {
-            $this->databaseManager->connection()->transaction(function () use ($customerId, $billingPayload, $shippingPayload, $paymentPayload, $result): void {
-                $normalizedCustomerData = array_merge(
-                    $billingPayload !== null ? $this->flatten($billingPayload) : [],
-                    $shippingPayload !== null ? $this->flatten($shippingPayload) : [],
-                    $paymentPayload !== null ? $this->flatten($paymentPayload) : [],
-                );
-
-                $customer = $this->upsertCustomer($customerId, $normalizedCustomerData, $result);
+            $this->databaseManager->connection()->transaction(function () use ($customerId, $billingFields, $shippingFields, $paymentFields, $currencyFields, $result): void {
+                $customer = $this->upsertCustomer($customerId, $billingFields, $result);
 
                 if ($customer === null) {
-                    if ($billingPayload !== null) {
+                    if ($billingFields !== null) {
                         $this->setSection($result, 'billing', 'warning', 'customer missing');
                     }
-                    if ($shippingPayload !== null) {
+                    if ($shippingFields !== null) {
                         $this->setSection($result, 'shipping', 'warning', 'customer missing');
                     }
-                    if ($paymentPayload !== null) {
+                    if ($paymentFields !== null) {
                         $this->setSection($result, 'payment', 'warning', 'customer missing');
+                    }
+                    if ($currencyFields !== null) {
+                        $this->setSection($result, 'currency', 'warning', 'customer missing');
                     }
 
                     return;
                 }
 
-                if ($billingPayload !== null) {
-                    $this->upsertAddress($customer, $billingPayload, 'billing', $result);
+                if ($billingFields !== null) {
+                    $this->syncAddress($customer, $billingFields, 'billing', $result);
                 }
 
-                if ($shippingPayload !== null) {
-                    $this->upsertAddress($customer, $shippingPayload, 'shipping', $result);
+                if ($shippingFields !== null) {
+                    if ($this->looksLikeAddress($shippingFields)) {
+                        $this->syncAddress($customer, $shippingFields, 'shipping', $result);
+                    } else {
+                        $this->syncShippingPreference($customer, $shippingFields, $result);
+                    }
                 }
 
-                if ($paymentPayload !== null) {
-                    $this->upsertPaymentMethod($customer, $paymentPayload, $result);
+                if ($paymentFields !== null) {
+                    $this->upsertPaymentMethod($customer, $paymentFields, $result);
+                }
+
+                if ($currencyFields !== null) {
+                    $this->applyCurrency($customer, $currencyFields, $result);
                 }
             });
         } catch (Throwable $exception) {
@@ -130,7 +140,7 @@ final class CustomerImporter
     public function importAll(): ImportSummaryDTO
     {
         $disk = Storage::disk('local');
-        if (!$disk->directoryExists(self::BASE_PATH)) {
+        if (! $disk->directoryExists(self::BASE_PATH)) {
             return new ImportSummaryDTO(total: 0);
         }
 
@@ -138,12 +148,12 @@ final class CustomerImporter
         $customerIds = [];
         foreach ($directories as $directory) {
             $name = basename($directory);
-            if (!Str::startsWith($name, 'customer_')) {
+            if (! Str::startsWith($name, 'customer_')) {
                 continue;
             }
 
             $idPart = Str::after($name, 'customer_');
-            if ($idPart === '' || !ctype_digit($idPart)) {
+            if ($idPart === '' || ! ctype_digit($idPart)) {
                 continue;
             }
 
@@ -174,20 +184,10 @@ final class CustomerImporter
         return $summary;
     }
 
-    private function upsertCustomer(int $customerId, array $normalizedData, ImportResultDTO $result): ?PimCustomer
+    private function upsertCustomer(int $customerId, ?array $billingFields, ImportResultDTO $result): ?PimCustomer
     {
         $existing = PimCustomer::query()->where('identifier', (string) $customerId)->first();
-        $attributes = $this->mapToCustomer($normalizedData, $customerId);
-
-        if (!array_key_exists('custom_fields', $attributes) || $attributes['custom_fields'] === []) {
-            if ($existing === null) {
-                $attributes['custom_fields'] = [
-                    PimCustomerCustomFields::BLOCKED->value => false,
-                ];
-            } else {
-                unset($attributes['custom_fields']);
-            }
-        }
+        $attributes = $this->mapToCustomer($customerId, $billingFields);
 
         if ($existing === null && $this->requiresCustomerFieldsMissing($attributes)) {
             $result->warnings[] = sprintf('Customer %d missing required fields. Skipping customer creation.', $customerId);
@@ -215,10 +215,7 @@ final class CustomerImporter
         }
 
         if ($customFields !== null) {
-            $currentCustomFields = $existing->custom_fields ?? [];
-            $merged = array_merge($currentCustomFields, $this->filterNullValues($customFields));
-            $existing->custom_fields = $merged;
-            $hasChanges = true;
+            $hasChanges = $this->mergeCustomerCustomFields($existing, $customFields) || $hasChanges;
         }
 
         if ($hasChanges) {
@@ -230,16 +227,70 @@ final class CustomerImporter
         return $existing;
     }
 
-    private function upsertAddress(PimCustomer $customer, array $payload, string $type, ImportResultDTO $result): void
+    private function mapToCustomer(int $customerId, ?array $billingFields): array
     {
-        $attributes = $this->mapToAddress($payload, $type);
+        $columns = $this->getCustomerColumns();
+        $attributes = [];
+
+        if (in_array('identifier', $columns, true)) {
+            $attributes['identifier'] = (string) $customerId;
+        }
+
+        if ($billingFields !== null) {
+            if (in_array('first_name', $columns, true)) {
+                $firstName = $this->stringOrNull($billingFields['Name2'] ?? $billingFields['Name1'] ?? null);
+                if ($firstName !== null) {
+                    $attributes['first_name'] = $firstName;
+                }
+            }
+
+            if (in_array('last_name', $columns, true)) {
+                $lastName = $this->stringOrNull($billingFields['Name1'] ?? $billingFields['Name2'] ?? null);
+                if ($lastName !== null) {
+                    $attributes['last_name'] = $lastName;
+                }
+            }
+
+            if (in_array('email', $columns, true)) {
+                $email = $this->stringOrNull($billingFields['EMail'] ?? null);
+                if ($email !== null) {
+                    $attributes['email'] = $email;
+                }
+            }
+        }
+
+        if (in_array('custom_fields', $columns, true)) {
+            $customFields = [
+                PimCustomerCustomFields::TYPE->value => PimCustomerType::CUSTOMER->value,
+            ];
+
+            if ($billingFields !== null) {
+                $customFields[PimCustomerCustomFields::COMPANY_NAME->value] = $this->stringOrNull($billingFields['Name1'] ?? null);
+                $customFields[PimCustomerCustomFields::FISCAL_CODE->value] = $this->stringOrNull($billingFields['Steuernummer'] ?? null);
+                $vat = $this->stringOrNull($billingFields['UStIDNummer'] ?? $billingFields['MwStNummer'] ?? null);
+                $customFields[PimCustomerCustomFields::VAT_ID->value] = $vat;
+                $blocked = $this->normalizeBoolean($billingFields['Gesperrt'] ?? null);
+                $customFields[PimCustomerCustomFields::BLOCKED->value] = $blocked;
+            }
+
+            $filtered = $this->filterNullValues($customFields);
+            if ($filtered !== []) {
+                $attributes['custom_fields'] = $filtered;
+            }
+        }
+
+        return $attributes;
+    }
+
+    private function syncAddress(PimCustomer $customer, array $fields, string $type, ImportResultDTO $result): bool
+    {
+        $attributes = $this->mapToAddress($fields, $type);
         $attributes['customer_id'] = $customer->id;
 
-        $filtered = $this->filterNullValues($attributes);
         $requiredKeys = ['street', 'city', 'zipcode'];
         $missing = [];
         foreach ($requiredKeys as $key) {
-            if (!array_key_exists($key, $filtered)) {
+            if (! array_key_exists($key, $attributes)) {
                 $missing[] = $key;
             }
         }
@@ -249,17 +300,24 @@ final class CustomerImporter
             $result->warnings[] = $message;
             $this->setSection($result, $type, 'warning', 'missing fields');
 
-            return;
+            return false;
         }
 
-        $search = [
-            'customer_id' => $customer->id,
-        ];
-        if (array_key_exists('custom_fields', $filtered)) {
-            $search['custom_fields'] = $filtered['custom_fields'];
+        $search = ['customer_id' => $customer->id];
+        $data = $attributes;
+
+        if (array_key_exists('id', $attributes)) {
+            $search['id'] = $attributes['id'];
+        } elseif (isset($attributes['street'], $attributes['zipcode'])) {
+            $search['street'] = $attributes['street'];
+            $search['zipcode'] = $attributes['zipcode'];
         }
 
-        $address = PimCustomerAddress::query()->updateOrCreate($search, $filtered);
+        if (! array_key_exists('id', $attributes)) {
+            unset($data['id']);
+        }
+
+        $address = PimCustomerAddress::query()->updateOrCreate($search, $data);
 
         $columns = $this->getCustomerColumns();
         if ($type === 'billing' && in_array('default_billing_address_id', $columns, true)) {
@@ -279,11 +337,58 @@ final class CustomerImporter
         $result->createdOrUpdated = true;
         $result->messages[] = sprintf('%s address synced.', ucfirst($type));
         $this->setSection($result, $type, 'success', 'synced');
+
+        return true;
     }
 
-    private function upsertPaymentMethod(PimCustomer $customer, array $payload, ImportResultDTO $result): void
+    private function syncShippingPreference(PimCustomer $customer, array $fields, ImportResultDTO $result): void
     {
-        $attributes = $this->mapToPaymentMethod($payload);
+        $updates = $this->filterNullValues([
+            PimCustomerCustomFields::SHIPPING_METHOD_CODE->value => $this->stringOrNull($fields['Code'] ?? null),
+            PimCustomerCustomFields::SHIPPING_METHOD_NAME->value => $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null),
+            PimCustomerCustomFields::SHIPPING_METHOD_PROVIDER->value => $this->stringOrNull($fields['TransportDurch'] ?? null),
+        ]);
+
+        if ($updates === []) {
+            $result->warnings[] = 'Shipping reference missing recognizable fields.';
+            $this->setSection($result, 'shipping', 'warning', 'no data');
+
+            return;
+        }
+
+        if ($this->mergeCustomerCustomFields($customer, $updates)) {
+            $result->createdOrUpdated = true;
+            $result->messages[] = 'Shipping preference synced.';
+        }
+
+        $this->setSection($result, 'shipping', 'success', 'preference synced');
+    }
+
+    private function applyCurrency(PimCustomer $customer, array $fields, ImportResultDTO $result): void
+    {
+        $updates = $this->filterNullValues([
+            PimCustomerCustomFields::CURRENCY_CODE->value => $this->stringOrNull($fields['ISOCode'] ?? null),
+            PimCustomerCustomFields::CURRENCY_NAME->value => $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null),
+        ]);
+
+        if ($updates === []) {
+            $result->warnings[] = 'Currency reference missing recognizable fields.';
+            $this->setSection($result, 'currency', 'warning', 'no data');
+
+            return;
+        }
+
+        if ($this->mergeCustomerCustomFields($customer, $updates)) {
+            $result->createdOrUpdated = true;
+            $result->messages[] = 'Currency preference synced.';
+        }
+
+        $this->setSection($result, 'currency', 'success', 'synced');
+    }
+
+    private function upsertPaymentMethod(PimCustomer $customer, array $fields, ImportResultDTO $result): void
+    {
+        $attributes = $this->mapToPaymentMethod($fields);
         if ($attributes === []) {
             $result->warnings[] = 'Payment method missing required data.';
             $this->setSection($result, 'payment', 'warning', 'missing fields');
@@ -313,15 +418,48 @@ final class CustomerImporter
             $customer->save();
         }
 
+        $metadata = $this->filterNullValues([
+            PimCustomerCustomFields::PAYMENT_METHOD_CODE->value => $this->stringOrNull($fields['Code'] ?? null),
+            PimCustomerCustomFields::PAYMENT_METHOD_NAME->value => $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null),
+        ]);
+
+        if ($metadata !== []) {
+            if ($this->mergeCustomerCustomFields($customer, $metadata)) {
+                $result->createdOrUpdated = true;
+            }
+        }
+
         $result->createdOrUpdated = true;
         $result->messages[] = 'Payment method synced.';
         $this->setSection($result, 'payment', 'success', 'synced');
     }
 
+    private function mapToPaymentMethod(array $fields): array
+    {
+        $columns = $this->getPaymentColumns();
+        $attributes = [];
+
+        if (in_array('name', $columns, true)) {
+            $name = $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null);
+            if ($name !== null) {
+                $attributes['name'] = $name;
+            }
+        }
+
+        if (in_array('technical_name', $columns, true)) {
+            $technical = $this->stringOrNull($fields['Code'] ?? null);
+            if ($technical !== null) {
+                $attributes['technical_name'] = $technical;
+            }
+        }
+
+        return $this->filterNullValues($attributes);
+    }
+
     private function loadJsonForSection(ImportResultDTO $result, int $customerId, string $path, string $section): ?array
     {
         $disk = Storage::disk('local');
-        if (!$disk->exists($path)) {
+        if (! $disk->exists($path)) {
             $message = sprintf('%s file missing for customer %d.', basename($path), $customerId);
             Log::warning('Ombis customer import file missing.', [
                 'customer_id' => $customerId,
@@ -352,133 +490,94 @@ final class CustomerImporter
         ];
     }
 
-    private function mapToCustomer(array $data, int $customerId): array
+    private function looksLikeAddress(array $fields): bool
     {
-        $columns = $this->getCustomerColumns();
+        $street = $this->stringOrNull($fields['Strasse1'] ?? null);
+        $zip = $this->stringOrNull($fields['PLZ'] ?? null);
+        $city = $this->stringOrNull($fields['Ort'] ?? null);
+
+        return $street !== null && $zip !== null && $city !== null;
+    }
+
+    private function mapToAddress(array $fields, string $type): array
+    {
+        $columns = $this->getAddressColumns();
         $attributes = [];
 
-        if (in_array('identifier', $columns, true)) {
-            $attributes['identifier'] = (string) $customerId;
+        if (in_array('id', $columns, true)) {
+            $id = $this->formatUuid($fields['UUID'] ?? null);
+            if ($id !== null) {
+                $attributes['id'] = $id;
+            }
         }
 
         if (in_array('first_name', $columns, true)) {
-            $firstName = $this->firstString($data, ['first_name', 'firstname']);
+            $firstName = $this->stringOrNull($fields['Name2'] ?? $fields['Name1'] ?? null);
             if ($firstName !== null) {
                 $attributes['first_name'] = $firstName;
             }
         }
 
         if (in_array('last_name', $columns, true)) {
-            $lastName = $this->firstString($data, ['last_name', 'lastname']);
+            $lastName = $this->stringOrNull($fields['Name1'] ?? $fields['Name2'] ?? null);
             if ($lastName !== null) {
                 $attributes['last_name'] = $lastName;
             }
         }
 
-        if (in_array('email', $columns, true)) {
-            $email = $this->firstString($data, ['email', 'e_mail']);
-            if ($email !== null) {
-                $attributes['email'] = $email;
-            }
-        }
-
-        if (in_array('birthday', $columns, true)) {
-            $birthday = $this->firstString($data, ['birthday', 'birthdate', 'date_of_birth']);
-            if ($birthday !== null) {
-                $attributes['birthday'] = $birthday;
-            }
-        }
-
-        if (in_array('custom_fields', $columns, true)) {
-            $customFields = [];
-            $customFields[PimCustomerCustomFields::TYPE->value] = $this->firstString($data, ['type', 'customer_type']);
-            $customFields[PimCustomerCustomFields::COMPANY_NAME->value] = $this->firstString($data, ['company_name', 'company']);
-            $customFields[PimCustomerCustomFields::FISCAL_CODE->value] = $this->firstString($data, ['fiscal_code', 'tax_id']);
-            $customFields[PimCustomerCustomFields::VAT_ID->value] = $this->firstString($data, ['vat_id', 'vat']);
-            $customFields[PimCustomerCustomFields::AGENT_ID->value] = $this->firstString($data, ['agent_id']);
-            $customFields[PimCustomerCustomFields::NET_FOLDER_DOCUMENTS->value] = $this->firstString($data, ['net_folder_documents']);
-            $blockedValue = $this->firstValue($data, ['blocked', 'is_blocked']);
-            $customFields[PimCustomerCustomFields::BLOCKED->value] = $this->normalizeBoolean($blockedValue);
-
-            $attributes['custom_fields'] = $this->filterNullValues($customFields);
-        }
-
-        return $attributes;
-    }
-
-    private function mapToAddress(array $payload, string $type): array
-    {
-        $columns = $this->getAddressColumns();
-        $data = $this->flatten($payload);
-        $attributes = [];
-
         if (in_array('zipcode', $columns, true)) {
-            $zip = $this->firstString($data, ['zipcode', 'zip', 'postal_code']);
+            $zip = $this->stringOrNull($fields['PLZ'] ?? null);
             if ($zip !== null) {
                 $attributes['zipcode'] = $zip;
             }
         }
 
         if (in_array('city', $columns, true)) {
-            $city = $this->firstString($data, ['city', 'town']);
+            $city = $this->stringOrNull($fields['Ort'] ?? null);
             if ($city !== null) {
                 $attributes['city'] = $city;
             }
         }
 
         if (in_array('street', $columns, true)) {
-            $street = $this->firstString($data, ['street', 'street_1', 'address', 'address_line1']);
+            $street = $this->stringOrNull($fields['Strasse1'] ?? null);
             if ($street !== null) {
                 $attributes['street'] = $street;
             }
         }
 
         if (in_array('additional_address_line_1', $columns, true)) {
-            $additional = $this->firstString($data, ['street2', 'street_2', 'address_line2', 'additional_address']);
+            $additional = $this->stringOrNull($fields['Strasse2'] ?? null);
             if ($additional !== null) {
                 $attributes['additional_address_line_1'] = $additional;
             }
         }
 
         if (in_array('phone_number', $columns, true)) {
-            $phone = $this->firstString($data, ['phone_number', 'phone']);
+            $phone = $this->stringOrNull($fields['Telefon'] ?? $fields['Festnetztelefon'] ?? $fields['Mobiltelefon'] ?? null);
             if ($phone !== null) {
                 $attributes['phone_number'] = $phone;
             }
         }
 
         if (in_array('region', $columns, true)) {
-            $region = $this->firstString($data, ['region', 'state']);
+            $region = $this->stringOrNull($fields['Region'] ?? $fields['Provinz'] ?? null);
             if ($region !== null) {
                 $attributes['region'] = $region;
             }
         }
 
         if (in_array('vat_id', $columns, true)) {
-            $vat = $this->firstString($data, ['vat_id', 'vat']);
+            $vat = $this->stringOrNull($fields['UStIDNummer'] ?? $fields['MwStNummer'] ?? null);
             if ($vat !== null) {
                 $attributes['vat_id'] = $vat;
             }
         }
 
-        if (in_array('first_name', $columns, true)) {
-            $firstName = $this->firstString($data, ['first_name', 'firstname']);
-            if ($firstName !== null) {
-                $attributes['first_name'] = $firstName;
-            }
-        }
-
-        if (in_array('last_name', $columns, true)) {
-            $lastName = $this->firstString($data, ['last_name', 'lastname']);
-            if ($lastName !== null) {
-                $attributes['last_name'] = $lastName;
-            }
-        }
-
         if (in_array('country_id', $columns, true)) {
-            $countryValue = $this->firstString($data, ['country_iso', 'country_code', 'country']);
-            if ($countryValue !== null) {
-                $countryId = $this->resolveCountryId($countryValue);
+            $iso = $this->stringOrNull($fields['Land.ISOCode'] ?? $fields['CountryISO'] ?? null);
+            if ($iso !== null) {
+                $countryId = $this->resolveCountryId($iso);
                 if ($countryId !== null) {
                     $attributes['country_id'] = $countryId;
                 }
@@ -486,43 +585,29 @@ final class CustomerImporter
         }
 
         if (in_array('custom_fields', $columns, true)) {
-            try {
-                $attributes['custom_fields'] = json_encode([
-                    'type' => $type,
-                    'source' => 'ombis',
-                ], JSON_THROW_ON_ERROR);
-            } catch (JsonException) {
-                $attributes['custom_fields'] = json_encode([
-                    'type' => $type,
-                    'source' => 'ombis',
-                ]);
+            $customFields = $this->encodeCustomFields([
+                'status' => $this->stringOrNull($fields['Status'] ?? null),
+                'notes' => $this->stringOrNull($fields['Bemerkungen'] ?? null),
+                'raw_id' => $this->stringOrNull(isset($fields['ID']) ? (string) $fields['ID'] : null),
+                'type' => $type,
+            ]);
+
+            if ($customFields !== null) {
+                $attributes['custom_fields'] = $customFields;
             }
         }
 
         return $this->filterNullValues($attributes);
     }
 
-    private function mapToPaymentMethod(array $payload): array
+    private function extractFields(?array $payload): ?array
     {
-        $columns = $this->getPaymentColumns();
-        $data = $this->flatten($payload);
-        $attributes = [];
-
-        if (in_array('name', $columns, true)) {
-            $name = $this->firstString($data, ['name', 'display_name', 'title']);
-            if ($name !== null) {
-                $attributes['name'] = $name;
-            }
+        if ($payload === null) {
+            return null;
         }
 
-        if (in_array('technical_name', $columns, true)) {
-            $technical = $this->firstString($data, ['technical_name', 'code', 'identifier', 'key']);
-            if ($technical !== null) {
-                $attributes['technical_name'] = $technical;
-            }
-        }
-
-        return $this->filterNullValues($attributes);
+        $fields = $payload['Fields'] ?? $payload;
+        return is_array($fields) ? $fields : null;
     }
 
     private function readJsonOrNull(string $path, int $customerId): ?array
@@ -554,63 +639,22 @@ final class CustomerImporter
         return is_array($decoded) ? $decoded : null;
     }
 
-    private function flatten(array $data): array
+    private function stringOrNull(mixed $value): ?string
     {
-        $result = [];
-        foreach ($data as $key => $value) {
-            $normalizedKey = is_string($key) ? $this->normalizeKey($key) : (string) $key;
-            if (is_array($value)) {
-                if ($this->isAssoc($value)) {
-                    $result = array_merge($result, $this->flatten($value));
-                }
-
-                continue;
-            }
-
-            $result[$normalizedKey] = $value;
-        }
-
-        return $result;
-    }
-
-    private function normalizeKey(string $key): string
-    {
-        $key = str_replace(['-', ' '], '_', $key);
-        $key = preg_replace('/([a-z0-9])([A-Z])/', '$1_$2', $key) ?? $key;
-
-        return strtolower($key);
-    }
-
-    private function isAssoc(array $array): bool
-    {
-        if ($array === []) {
-            return false;
-        }
-
-        return array_keys($array) !== range(0, count($array) - 1);
-    }
-
-    private function firstString(array $data, array $keys): ?string
-    {
-        $value = $this->firstValue($data, $keys);
         if ($value === null) {
             return null;
         }
 
-        $string = is_scalar($value) ? (string) $value : null;
-        if ($string === null || $string === '') {
-            return null;
+        if (is_string($value)) {
+            $trimmed = trim($value);
+
+            return $trimmed === '' ? null : $trimmed;
         }
 
-        return trim($string);
-    }
+        if (is_scalar($value)) {
+            $string = (string) $value;
 
-    private function firstValue(array $data, array $keys): mixed
-    {
-        foreach ($keys as $key) {
-            if (array_key_exists($key, $data)) {
-                return $data[$key];
-            }
+            return $string === '' ? null : $string;
         }
 
         return null;
@@ -637,7 +681,11 @@ final class CustomerImporter
         }
 
         if (is_int($value)) {
-            return $value === 1 ? true : ($value === 0 ? false : null);
+            return match ($value) {
+                1 => true,
+                0 => false,
+                default => null,
+            };
         }
 
         return null;
@@ -654,6 +702,39 @@ final class CustomerImporter
             $values,
             static fn ($value) => $value !== null
         );
+    }
+
+    private function encodeCustomFields(array $fields): ?string
+    {
+        $filtered = $this->filterNullValues($fields);
+        if ($filtered === []) {
+            return null;
+        }
+
+        try {
+            return json_encode($filtered, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+    }
+
+    private function formatUuid(mixed $value): ?string
+    {
+        $raw = $this->stringOrNull($value);
+        if ($raw === null) {
+            return null;
+        }
+
+        $normalized = strtolower(str_replace('-', '', $raw));
+        if (strlen($normalized) !== 32) {
+            return Str::isUuid($raw) ? strtolower($raw) : null;
+        }
+
+        return substr($normalized, 0, 8) . '-' .
+            substr($normalized, 8, 4) . '-' .
+            substr($normalized, 12, 4) . '-' .
+            substr($normalized, 16, 4) . '-' .
+            substr($normalized, 20);
     }
 
     private function resolveCountryId(string $value): ?string
@@ -680,11 +761,36 @@ final class CustomerImporter
         return $id;
     }
 
+    private function mergeCustomerCustomFields(PimCustomer $customer, array $values): bool
+    {
+        $updates = $this->filterNullValues($values);
+        if ($updates === []) {
+            return false;
+        }
+
+        $current = $customer->custom_fields ?? [];
+        $changed = false;
+
+        foreach ($updates as $key => $value) {
+            if (! array_key_exists($key, $current) || $current[$key] !== $value) {
+                $current[$key] = $value;
+                $changed = true;
+            }
+        }
+
+        if ($changed) {
+            $customer->custom_fields = $current;
+            $customer->save();
+        }
+
+        return $changed;
+    }
+
     private function requiresCustomerFieldsMissing(array $attributes): bool
     {
         $required = ['identifier', 'email', 'custom_fields'];
         foreach ($required as $key) {
-            if (!array_key_exists($key, $attributes) || $attributes[$key] === null || $attributes[$key] === []) {
+            if (! array_key_exists($key, $attributes) || $attributes[$key] === null || $attributes[$key] === []) {
                 return true;
             }
         }
