@@ -125,7 +125,7 @@ final class ImportOmbisCustomerCommand extends Command
     private function formatSections(ImportResultDTO $result): array
     {
         $sections = [];
-        $order = ['billing', 'shipping', 'payment'];
+        $order = ['billing', 'shipping', 'payment', 'currency'];
 
         foreach ($order as $key) {
             if (!array_key_exists($key, $result->sections)) {
