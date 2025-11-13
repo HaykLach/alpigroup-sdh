@@ -10,6 +10,9 @@ use App\Models\Pim\Country\PimCountry;
 use App\Models\Pim\Customer\PimCustomer;
 use App\Models\Pim\Customer\PimCustomerAddress;
 use App\Models\Pim\PaymentMethod\PimPaymentMethod;
+use App\Models\Pim\PimLanguage;
+use App\Models\Pim\Region\PimRegion;
+use App\Models\Pim\Region\PimRegionTranslation;
 use App\Services\Ombis\DTO\ImportResultDTO;
 use App\Services\Ombis\DTO\ImportSummaryDTO;
 use Illuminate\Database\DatabaseManager;
@@ -49,6 +52,16 @@ final class CustomerImporter
      * @var array<string, string>
      */
     private array $countryCache = [];
+
+    /**
+     * @var array<string, string>
+     */
+    private array $regionCache = [];
+
+    /**
+     * @var array<string, PimLanguage>|null
+     */
+    private ?array $languagesByLocale = null;
 
     public function __construct(private readonly DatabaseManager $databaseManager)
     {
@@ -539,6 +552,7 @@ final class CustomerImporter
 
         $region = $this->extractFields($payload['Region'] ?? null);
         if ($region !== null) {
+            $fields['RegionFields'] = $region;
             $regionName = $this->stringOrNull($region['DisplayName'] ?? $region['Name'] ?? null);
             if ($regionName !== null) {
                 $fields['Region'] = $regionName;
@@ -583,6 +597,108 @@ final class CustomerImporter
         }
 
         return $billingFields;
+    }
+
+    private function resolveRegionIdFromFields(?array $regionFields): ?string
+    {
+        if ($regionFields === null) {
+            return null;
+        }
+
+        $name = $this->stringOrNull($regionFields['DisplayName'] ?? $regionFields['Name'] ?? null);
+        $externalId = $this->stringOrNull($regionFields['ID'] ?? null);
+        $code = $this->stringOrNull($regionFields['Code'] ?? null);
+
+        $cacheKey = $externalId ?? $code ?? $name;
+
+        if ($cacheKey !== null && array_key_exists($cacheKey, $this->regionCache)) {
+            return $this->regionCache[$cacheKey];
+        }
+
+        if ($externalId === null) {
+            if ($code !== null) {
+                $externalId = 'code_' . $code;
+            } elseif ($name !== null) {
+                $externalId = 'name_' . md5($name);
+            } else {
+                return null;
+            }
+        }
+
+        $attributes = $this->filterNullValues([
+            'external_id' => $externalId,
+            'code' => $code,
+            'display_name' => $name,
+        ]);
+
+        $region = PimRegion::query()->updateOrCreate(['external_id' => $externalId], $attributes);
+
+        $this->syncRegionTranslations($region, $regionFields);
+
+        if ($cacheKey !== null) {
+            $this->regionCache[$cacheKey] = $region->id;
+        } else {
+            $this->regionCache[$externalId] = $region->id;
+        }
+
+        return $region->id;
+    }
+
+    private function syncRegionTranslations(PimRegion $region, array $regionFields): void
+    {
+        foreach ($regionFields as $key => $value) {
+            if (! is_string($key) || ! Str::startsWith($key, 'Name_')) {
+                continue;
+            }
+
+            $languageCode = substr($key, 5);
+            $languageId = $this->languageIdForSuffix($languageCode);
+            $name = $this->stringOrNull(is_scalar($value) ? (string) $value : null);
+
+            if ($languageId === null || $name === null) {
+                continue;
+            }
+
+            PimRegionTranslation::query()->updateOrCreate(
+                [
+                    'pim_region_id' => $region->id,
+                    'language_id' => $languageId,
+                ],
+                ['name' => $name]
+            );
+        }
+    }
+
+    private function languageIdForSuffix(?string $suffix): ?string
+    {
+        if ($suffix === null || $suffix === '') {
+            return null;
+        }
+
+        $suffix = strtolower($suffix);
+
+        foreach ($this->getLanguagesByLocale() as $code => $language) {
+            $normalized = strtolower($code);
+            if ($normalized === $suffix || Str::startsWith($normalized, $suffix . '-') || Str::startsWith($normalized, $suffix)) {
+                return $language->id;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, PimLanguage>
+     */
+    private function getLanguagesByLocale(): array
+    {
+        if ($this->languagesByLocale === null) {
+            $this->languagesByLocale = PimLanguage::getAllWithLocalKeyedByCode()
+                ->mapWithKeys(static fn (PimLanguage $language, string $code) => [strtolower($code) => $language])
+                ->all();
+        }
+
+        return $this->languagesByLocale;
     }
 
     private function looksLikeAddress(array $fields): bool
@@ -655,10 +771,10 @@ final class CustomerImporter
             }
         }
 
-        if (in_array('region', $columns, true)) {
-            $region = $this->stringOrNull($fields['Region'] ?? $fields['Provinz'] ?? null);
+        if (in_array('region_id', $columns, true)) {
+            $region = $this->resolveRegionIdFromFields($fields['RegionFields'] ?? null);
             if ($region !== null) {
-                $attributes['region'] = $region;
+                $attributes['region_id'] = $region;
             }
         }
 

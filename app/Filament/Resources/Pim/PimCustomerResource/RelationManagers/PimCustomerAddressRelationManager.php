@@ -95,7 +95,10 @@ class PimCustomerAddressRelationManager extends RelationManager
                 ->required(),
             TextInput::make('additional_address_line_1')
                 ->label(__('Adresszusatz')),
-            TextInput::make('region')
+            Select::make('region_id')
+                ->relationship('region', 'display_name')
+                ->searchable()
+                ->preload()
                 ->label(__('Region')),
 
         ];
@@ -136,7 +139,7 @@ class PimCustomerAddressRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('additional_address_line_1')
                     ->searchable()
                     ->label(__('Adresszusatz')),
-                Tables\Columns\TextColumn::make('region')
+                Tables\Columns\TextColumn::make('region.display_name')
                     ->searchable()
                     ->label(__('Region')),
             ])

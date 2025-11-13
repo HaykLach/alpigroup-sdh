@@ -8,6 +8,10 @@ use App\Enums\Pim\PimCustomerCustomFields;
 use App\Models\Pim\Country\PimCountry;
 use App\Models\Pim\Customer\PimCustomer;
 use App\Models\Pim\Customer\PimCustomerAddress;
+use App\Models\Pim\PimLanguage;
+use App\Models\Pim\PimLocal;
+use App\Models\Pim\Region\PimRegion;
+use App\Models\Pim\Region\PimRegionTranslation;
 use App\Models\Pim\PaymentMethod\PimPaymentMethod;
 use App\Services\Ombis\CustomerImporter;
 use App\Services\Ombis\DTO\ImportResultDTO;
@@ -311,9 +315,79 @@ final class CustomerImporterTest extends TestCase
         $this->assertNotNull($shippingAddress);
         $this->assertSame('Bolzano', $shippingAddress->city);
         $this->assertSame('39100', $shippingAddress->zipcode);
-        $this->assertSame('Veneto', $shippingAddress->region);
+        $this->assertNotNull($shippingAddress->region_id);
+        $this->assertSame('Veneto', $shippingAddress->region?->display_name);
         $this->assertNotNull($shippingAddress->country_id);
         $this->assertSame(2, PimCustomerAddress::query()->where('customer_id', $customer->id)->count());
+    }
+
+    public function test_import_creates_region_and_translations_from_reference(): void
+    {
+        PimCountry::query()->create(['name' => 'Italy', 'iso' => 'IT']);
+
+        $deLocal = PimLocal::query()->create(['code' => 'de-DE']);
+        $itLocal = PimLocal::query()->create(['code' => 'it-IT']);
+        $deLanguage = PimLanguage::query()->create(['name' => 'Deutsch', 'pim_local_id' => $deLocal->id]);
+        $itLanguage = PimLanguage::query()->create(['name' => 'Italienisch', 'pim_local_id' => $itLocal->id]);
+
+        $billing = $this->billingFields(
+            uuid: '22222222222222222222222222222222',
+            name1: 'Region Spa',
+            name2: 'Rosa',
+            street: 'Via Regionale 2',
+            zip: '39010',
+            city: 'Meran',
+            countryIso: 'IT',
+            email: 'rosa@example.com',
+            vat: 'IT11122233344'
+        );
+
+        $regionFields = [
+            'ID' => '193',
+            'Code' => 'TRE',
+            'Name_de' => 'Trentino-Südtirol',
+            'Name_it' => 'Trentino-Alto Adige',
+        ];
+
+        $this->seedCustomerFiles(408, [
+            'billing' => $billing,
+            'billing_references' => $this->billingReferencePayload('IT', regionFields: $regionFields),
+            'shipping' => $billing,
+            'shipping_references' => $this->billingReferencePayload('IT', regionFields: $regionFields),
+            'payment' => $this->paymentFields(code: 'BANK', name: 'Bank Transfer'),
+            'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
+        ]);
+
+        $result = $this->app->make(CustomerImporter::class)->importOne(408);
+
+        $this->assertSame([], $result->errors);
+
+        $region = PimRegion::query()->where('external_id', '193')->first();
+        $this->assertNotNull($region);
+        $this->assertSame('TRE', $region->code);
+        $this->assertSame('Trentino-Südtirol', $region->display_name);
+
+        $this->assertSame(2, PimRegionTranslation::query()->where('pim_region_id', $region->id)->count());
+        $this->assertSame(
+            'Trentino-Südtirol',
+            PimRegionTranslation::query()
+                ->where('pim_region_id', $region->id)
+                ->where('language_id', $deLanguage->id)
+                ->first()
+                ?->name
+        );
+        $this->assertSame(
+            'Trentino-Alto Adige',
+            PimRegionTranslation::query()
+                ->where('pim_region_id', $region->id)
+                ->where('language_id', $itLanguage->id)
+                ->first()
+                ?->name
+        );
+
+        $address = PimCustomerAddress::query()->where('customer_id', PimCustomer::query()->where('identifier', '408')->value('id'))->first();
+        $this->assertNotNull($address);
+        $this->assertSame($region->id, $address->region_id);
     }
 
     /**
@@ -437,7 +511,8 @@ final class CustomerImporterTest extends TestCase
         string $region = 'Trentino-Südtirol',
         string $province = 'Bozen',
         ?string $city = null,
-        ?string $zip = null
+        ?string $zip = null,
+        array $regionFields = []
     ): array {
         $land = [
             'Fields' => [
@@ -446,10 +521,14 @@ final class CustomerImporterTest extends TestCase
             ],
         ];
 
+        $baseRegionFields = [
+            'DisplayName' => $region,
+            'ID' => (string) abs(crc32($region)),
+            'Code' => strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $region) ?: 'REG', 0, 3)),
+        ];
+
         $regionPayload = [
-            'Fields' => [
-                'DisplayName' => $region,
-            ],
+            'Fields' => array_filter(array_merge($baseRegionFields, $regionFields), static fn ($value) => $value !== null),
         ];
 
         $provincePayload = [

@@ -321,7 +321,7 @@ class PimResourceCustomerService
                 'city' => $data['city'],
                 'street' => $data['street'],
                 'additional_address_line_1' => $data['additional_address_line_1'] ?? null,
-                'region' => $data['region'] ?? null,
+                'region_id' => $data['region_id'] ?? null,
                 'phone_number' => $data['phone_number'] ?? null,
             ]);
         }
