@@ -10,7 +10,7 @@ class CustomerAddressRepository extends BaseRepository implements CustomerAddres
 {
     public function findByData(array $data): ?PimCustomerAddress
     {
-        return PimCustomerAddress::where([
+        $query = PimCustomerAddress::query()->where([
             ['customer_id', '=', $data['customer_id']],
             ['zipcode', '=', $data['zipcode']],
             ['country_id', '=', $data['country_id']],
@@ -18,12 +18,19 @@ class CustomerAddressRepository extends BaseRepository implements CustomerAddres
             ['street', '=', $data['street']],
             ['additional_address_line_1', '=', $data['additional_address_line_1'] ?? ''],
             ['phone_number', '=', $data['phone_number'] ?? ''],
-            ['region', '=', $data['region'] ?? ''],
             ['first_name', '=', $data['first_name']],
             ['last_name', '=', $data['last_name']],
             ['salutation_id', '=', $data['salutation_id']],
             ['custom_fields', '=', $data['custom_fields']],
-        ])->first();
+        ]);
+
+        if (($data['region_id'] ?? null) !== null) {
+            $query->where('region_id', '=', $data['region_id']);
+        } else {
+            $query->whereNull('region_id');
+        }
+
+        return $query->first();
     }
 
     public function create(array $data): PimCustomerAddress

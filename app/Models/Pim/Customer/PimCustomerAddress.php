@@ -3,6 +3,7 @@
 namespace App\Models\Pim\Customer;
 
 use App\Models\Pim\Country\PimCountry;
+use App\Models\Pim\Region\PimRegion;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -25,7 +26,7 @@ class PimCustomerAddress extends Model
         'street',
         'additional_address_line_1',
         'phone_number',
-        'region',
+        'region_id',
         'customer_id',
         'vat_id',
         'custom_fields',
@@ -49,5 +50,10 @@ class PimCustomerAddress extends Model
     public function salutation(): BelongsTo
     {
         return $this->belongsTo(PimCustomerSalutation::class, 'salutation_id', 'id');
+    }
+
+    public function region(): BelongsTo
+    {
+        return $this->belongsTo(PimRegion::class, 'region_id', 'id');
     }
 }

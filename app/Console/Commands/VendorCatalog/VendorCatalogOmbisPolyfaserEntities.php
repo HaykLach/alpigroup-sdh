@@ -347,7 +347,7 @@ class VendorCatalogOmbisPolyfaserEntities extends Command
                     'street' => $data[$addressKey.'Strasse1'],
                     'additional_address_line_1' => $data[$addressKey.'Strasse2'],
                     'phone_number' => $data[$addressKey.'Telefon'],
-                    'region' => null,
+                    'region_id' => null,
                     'vat_id' => $vatId,
                 ];
 

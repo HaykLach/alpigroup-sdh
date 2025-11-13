@@ -6,7 +6,7 @@ use App\Enums\Pim\PimCustomerType;
 use App\Filament\Resources\Pim\PimCustomerResource;
 use App\Models\Pim\Customer\PimCustomer;
 use App\Services\Pim\PimResourceCustomerService;
-use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Form;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables;
@@ -40,7 +40,10 @@ class PimAgentCustomerRelationManager extends RelationManager
     public static function getFormElements(): array
     {
         return [
-            TextInput::make('region')
+            Select::make('region_id')
+                ->relationship('region', 'display_name')
+                ->searchable()
+                ->preload()
                 ->label(__('Region')),
 
         ];
