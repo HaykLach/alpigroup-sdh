@@ -33,6 +33,8 @@ class ImportCustomerReferencesCommand extends Command
 
     private const BILLING_ADDRESS_REFERENCES_FILE = 'billing_address_references.json';
 
+    private const SHIPPING_ADDRESS_REFERENCES_FILE = 'shipping_address_references.json';
+
     private const REFERENCES_FILE = 'references.json';
 
     private Ombis $connector;
@@ -43,7 +45,8 @@ class ImportCustomerReferencesCommand extends Command
     private array $cacheShippingAddrByCustomer = [];
     private array $cacheDeliveryAddrById = [];
     private array $cacheAddressReferenceByUri = [];
-    private array $cacheBillingReferenceByCustomerAndName = [];
+    private array $cacheAddressReferenceByCustomerAndName = [];
+    private array $cacheLandRegionByLandAndRegion = [];
 
     public function handle(): int
     {
@@ -104,6 +107,7 @@ class ImportCustomerReferencesCommand extends Command
             $billing = $this->fetchBillingAddress($customerId, $folderName);
             $billingReferences = $this->fetchBillingAddressReferences($billing, $folderName, $customerId);
             $shipping = $this->fetchShippingAddress($customerId, $folderName, $fields);
+            $shippingReferences = $this->fetchShippingAddressReferences($shipping, $folderName, $customerId);
             $delivery = $this->fetchDeliveryAddresses($deliveryReferences, $folderName);
 
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::PAYMENT_METHOD_FILE, $paymentMethod, $folderName, 'payment method');
@@ -111,6 +115,7 @@ class ImportCustomerReferencesCommand extends Command
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::BILLING_ADDRESS_FILE, $billing, $folderName, 'billing address');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::BILLING_ADDRESS_REFERENCES_FILE, $billingReferences, $folderName, 'billing address references');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::SHIPPING_ADDRESS_FILE, $shipping, $folderName, 'shipping address');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::SHIPPING_ADDRESS_REFERENCES_FILE, $shippingReferences, $folderName, 'shipping address references');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::DELIVERY_ADDRESSES_FILE, $delivery, $folderName, 'delivery addresses');
 
             $references = [
@@ -119,6 +124,7 @@ class ImportCustomerReferencesCommand extends Command
                 'billing_address' => $billing,
                 'billing_address_references' => $billingReferences,
                 'shipping_address' => $shipping,
+                'shipping_address_references' => $shippingReferences,
                 'delivery_addresses' => $delivery,
             ];
 
@@ -271,7 +277,17 @@ class ImportCustomerReferencesCommand extends Command
 
     private function fetchBillingAddressReferences(?array $billing, string $folderName, int|string $customerId): ?array
     {
-        $references = $this->extractAddressReferences($billing);
+        return $this->fetchAddressReferences($billing, $folderName, $customerId, 'billing');
+    }
+
+    private function fetchShippingAddressReferences(?array $shipping, string $folderName, int|string $customerId): ?array
+    {
+        return $this->fetchAddressReferences($shipping, $folderName, $customerId, 'shipping');
+    }
+
+    private function fetchAddressReferences(?array $resource, string $folderName, int|string $customerId, string $type): ?array
+    {
+        $references = $this->extractAddressReferences($resource);
 
         if ($references === []) {
             return null;
@@ -287,24 +303,94 @@ class ImportCustomerReferencesCommand extends Command
                 continue;
             }
 
-            $resource = $this->getBillingAddressReferenceByName($customerId, $name, 200);
+            $resourceReference = $this->getAddressReferenceByName($customerId, $name, $type, 200);
 
-            if ($resource === null && $uri !== null) {
-                $resource = $this->getReferenceByUri($uri, 200);
+            if ($resourceReference === null && $uri !== null) {
+                $resourceReference = $this->getReferenceByUri($uri, 200);
             }
 
-            if ($resource !== null) {
-                $resolved[$name] = $resource;
+            if ($resourceReference !== null) {
+                $resolved[$name] = $resourceReference;
+
+                if (strtolower($name) === 'land') {
+                    $landRegion = $this->resolveLandRegionReference($resourceReference, $folderName, $type);
+
+                    if ($landRegion !== null && ! array_key_exists('Region', $resolved)) {
+                        $resolved['Region'] = $landRegion;
+                    }
+                }
+
                 continue;
             }
 
             Log::warning('Invalid response received for Ombis customer reference.', [
                 'customer_folder' => $folderName,
-                'resource' => sprintf('billing %s reference', $name),
+                'resource' => sprintf('%s %s reference', $type, $name),
             ]);
         }
 
         return $resolved === [] ? null : $resolved;
+    }
+
+    private function resolveLandRegionReference(array $landResource, string $folderName, string $type): ?array
+    {
+        $fields = is_array($landResource['Fields'] ?? null) ? $landResource['Fields'] : null;
+        $landId = $this->extractIdentifier($fields['ID'] ?? null);
+
+        if ($landId === null) {
+            return null;
+        }
+
+        $references = $this->extractAddressReferences($landResource);
+
+        foreach ($references as $reference) {
+            if (strtolower($reference['Name'] ?? '') !== 'region') {
+                continue;
+            }
+
+            $regionId = $this->extractIdentifier($reference['ID'] ?? null);
+
+            if ($regionId === null) {
+                $regionFields = is_array($reference['Fields'] ?? null) ? $reference['Fields'] : null;
+                $regionId = $this->extractIdentifier($regionFields['ID'] ?? null);
+            }
+
+            if ($regionId === null) {
+                $regionId = $this->extractRegionIdFromUri($reference['URI'] ?? null);
+            }
+
+            if ($regionId === null) {
+                continue;
+            }
+
+            $region = $this->getLandRegion($landId, $regionId, 200);
+
+            if ($region !== null) {
+                return $region;
+            }
+
+            Log::warning('Unable to resolve land region reference.', [
+                'customer_folder' => $folderName,
+                'type' => $type,
+                'land_id' => $landId,
+                'region_id' => $regionId,
+            ]);
+        }
+
+        return null;
+    }
+
+    private function extractRegionIdFromUri(?string $uri): ?string
+    {
+        if (!is_string($uri) || $uri === '') {
+            return null;
+        }
+
+        if (preg_match('/region\/(\d+)/', $uri, $matches) === 1) {
+            return $matches[1];
+        }
+
+        return null;
     }
 
     private function fetchShippingAddress(int|string $customerId, string $folderName, array $fields): ?array
@@ -574,6 +660,49 @@ class ImportCustomerReferencesCommand extends Command
         return $decoded;
     }
 
+    private function getLandRegion(int|string $landId, int|string $regionId, int $sleepMs = 0): ?array
+    {
+        $landKey = (string)$landId;
+        $regionKey = (string)$regionId;
+
+        if ($landKey === '' || $regionKey === '') {
+            return null;
+        }
+
+        $cacheKey = $landKey . '|' . $regionKey;
+
+        if (array_key_exists($cacheKey, $this->cacheLandRegionByLandAndRegion)) {
+            return $this->cacheLandRegionByLandAndRegion[$cacheKey];
+        }
+
+        try {
+            $raw = $this->connector->requestLandRegion($landId, $regionId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis land region request failed', [
+                'landId' => $landId,
+                'regionId' => $regionId,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheLandRegionByLandAndRegion[$cacheKey] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheLandRegionByLandAndRegion[$cacheKey] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
     /**
      * @param array<string, mixed>|null $resource
      * @return array<int, array<string, mixed>>
@@ -726,37 +855,48 @@ class ImportCustomerReferencesCommand extends Command
         return $decoded;
     }
 
-    private function getBillingAddressReferenceByName(int|string $customerId, string $name, int $sleepMs = 0): ?array
+    private function getAddressReferenceByName(int|string $customerId, string $name, string $type, int $sleepMs = 0): ?array
     {
-        $method = match (strtolower($name)) {
-            'geburtsland' => 'requestCustomerBillingAddressGeburtsland',
-            'region' => 'requestCustomerBillingAddressRegion',
-            'provinz' => 'requestCustomerBillingAddressProvinz',
-            'gemeinde' => 'requestCustomerBillingAddressGemeinde',
-            'dateperiod' => 'requestCustomerBillingAddressDatePeriod',
+        $normalized = strtolower($name);
+        $method = match ($type) {
+            'billing' => match ($normalized) {
+                'geburtsland' => 'requestCustomerBillingAddressGeburtsland',
+                'region' => 'requestCustomerBillingAddressRegion',
+                'provinz' => 'requestCustomerBillingAddressProvinz',
+                'gemeinde' => 'requestCustomerBillingAddressGemeinde',
+                'dateperiod' => 'requestCustomerBillingAddressDatePeriod',
+                default => null,
+            },
+            'shipping' => match ($normalized) {
+                'region' => 'requestCustomerShippingAddressRegion',
+                'provinz' => 'requestCustomerShippingAddressProvinz',
+                'gemeinde' => 'requestCustomerShippingAddressGemeinde',
+                default => null,
+            },
             default => null,
         };
 
-        if ($method === null) {
+        if ($method === null || !method_exists($this->connector, $method)) {
             return null;
         }
 
-        $cacheKey = sprintf('%s|%s', (string)$customerId, $method);
+        $cacheKey = sprintf('%s|%s|%s', (string)$customerId, $type, $method);
 
-        if (array_key_exists($cacheKey, $this->cacheBillingReferenceByCustomerAndName)) {
-            return $this->cacheBillingReferenceByCustomerAndName[$cacheKey];
+        if (array_key_exists($cacheKey, $this->cacheAddressReferenceByCustomerAndName)) {
+            return $this->cacheAddressReferenceByCustomerAndName[$cacheKey];
         }
 
         try {
             $raw = $this->connector->{$method}($customerId);
         } catch (Throwable $exception) {
-            Log::warning('Ombis billing reference request failed', [
+            Log::warning('Ombis address reference request failed', [
                 'customerId' => $customerId,
                 'reference' => $name,
+                'type' => $type,
                 'err' => $exception->getMessage(),
             ]);
 
-            $this->cacheBillingReferenceByCustomerAndName[$cacheKey] = null;
+            $this->cacheAddressReferenceByCustomerAndName[$cacheKey] = null;
 
             if ($sleepMs > 0) {
                 usleep($sleepMs * 1000);
@@ -766,7 +906,7 @@ class ImportCustomerReferencesCommand extends Command
         }
 
         $decoded = $this->toArray($raw);
-        $this->cacheBillingReferenceByCustomerAndName[$cacheKey] = $decoded;
+        $this->cacheAddressReferenceByCustomerAndName[$cacheKey] = $decoded;
 
         if ($sleepMs > 0) {
             usleep($sleepMs * 1000);

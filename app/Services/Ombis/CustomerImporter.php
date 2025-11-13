@@ -26,6 +26,7 @@ final class CustomerImporter
     private const BILLING_FILE = 'refs/billing_address.json';
     private const BILLING_REFERENCES_FILE = 'refs/billing_address_references.json';
     private const SHIPPING_FILE = 'refs/shipping_address.json';
+    private const SHIPPING_REFERENCES_FILE = 'refs/shipping_address_references.json';
     private const PAYMENT_FILE = 'refs/payment_method.json';
     private const CURRENCY_FILE = 'refs/currency.json';
 
@@ -76,17 +77,22 @@ final class CustomerImporter
         }
 
         $billingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::BILLING_FILE, 'billing');
-        $billingReferencesPayload = $this->loadBillingReferences($result, $customerId, $directory . '/' . self::BILLING_REFERENCES_FILE);
+        $billingReferencesPayload = $this->loadAddressReferences($result, $customerId, $directory . '/' . self::BILLING_REFERENCES_FILE);
         $shippingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::SHIPPING_FILE, 'shipping');
+        $shippingReferencesPayload = $this->loadAddressReferences($result, $customerId, $directory . '/' . self::SHIPPING_REFERENCES_FILE);
         $paymentPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::PAYMENT_FILE, 'payment');
         $currencyPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::CURRENCY_FILE, 'currency');
 
         $billingFields = $this->extractFields($billingPayload);
-        $billingReferenceFields = $this->extractBillingReferenceFields($billingReferencesPayload);
+        $billingReferenceFields = $this->extractReferenceFields($billingReferencesPayload);
         if ($billingReferenceFields !== []) {
-            $billingFields = $this->mergeBillingFieldsWithReferences($billingFields, $billingReferenceFields);
+            $billingFields = $this->mergeAddressFieldsWithReferences($billingFields, $billingReferenceFields);
         }
         $shippingFields = $this->extractFields($shippingPayload);
+        $shippingReferenceFields = $this->extractReferenceFields($shippingReferencesPayload);
+        if ($shippingReferenceFields !== [] && $shippingFields !== null) {
+            $shippingFields = $this->mergeAddressFieldsWithReferences($shippingFields, $shippingReferenceFields);
+        }
         $paymentFields = $this->extractFields($paymentPayload);
         $currencyFields = $this->extractFields($currencyPayload);
 
@@ -495,7 +501,7 @@ final class CustomerImporter
         ];
     }
 
-    private function loadBillingReferences(ImportResultDTO $result, int $customerId, string $path): ?array
+    private function loadAddressReferences(ImportResultDTO $result, int $customerId, string $path): ?array
     {
         $disk = Storage::disk('local');
         if (! $disk->exists($path)) {
@@ -510,7 +516,7 @@ final class CustomerImporter
         return $payload;
     }
 
-    private function extractBillingReferenceFields(?array $payload): array
+    private function extractReferenceFields(?array $payload): array
     {
         if ($payload === null) {
             return [];
@@ -563,7 +569,7 @@ final class CustomerImporter
         return $fields;
     }
 
-    private function mergeBillingFieldsWithReferences(?array $billingFields, array $referenceFields): ?array
+    private function mergeAddressFieldsWithReferences(?array $billingFields, array $referenceFields): ?array
     {
         if ($billingFields === null) {
             return $referenceFields === [] ? null : $referenceFields;
