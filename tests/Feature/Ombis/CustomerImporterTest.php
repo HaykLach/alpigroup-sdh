@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Ombis;
 
 use App\Enums\Pim\PimCustomerCustomFields;
+use App\Enums\Pim\PimCustomerType;
 use App\Models\Pim\Country\PimCountry;
 use App\Models\Pim\Customer\PimCustomer;
 use App\Models\Pim\Customer\PimCustomerAddress;
@@ -388,6 +389,80 @@ final class CustomerImporterTest extends TestCase
         $address = PimCustomerAddress::query()->where('customer_id', PimCustomer::query()->where('identifier', '408')->value('id'))->first();
         $this->assertNotNull($address);
         $this->assertSame($region->id, $address->region_id);
+    }
+
+    public function test_import_assigns_shipping_default_from_billing_when_shipping_missing(): void
+    {
+        PimCountry::query()->create(['name' => 'Italy', 'iso' => 'IT']);
+
+        $this->seedCustomerFiles(409, [
+            'billing' => $this->billingFields(
+                uuid: '33333333333333333333333333333333',
+                name1: 'Default Spa',
+                name2: 'Dora',
+                street: 'Via Default 1',
+                zip: '39100',
+                city: 'Bolzano',
+                countryIso: 'IT',
+                email: 'dora@example.com',
+                vat: 'IT33333333333'
+            ),
+            'billing_references' => $this->billingReferencePayload('IT'),
+        ]);
+
+        $result = $this->app->make(CustomerImporter::class)->importOne(409);
+
+        $this->assertSame([], $result->errors);
+
+        $customer = PimCustomer::query()->where('identifier', '409')->first();
+        $this->assertNotNull($customer);
+        $this->assertNotNull($customer->default_billing_address_id);
+        $this->assertSame(
+            $customer->default_billing_address_id,
+            $customer->default_shipping_address_id
+        );
+    }
+
+    public function test_import_assigns_billing_default_from_shipping_when_billing_missing(): void
+    {
+        PimCountry::query()->create(['name' => 'Italy', 'iso' => 'IT']);
+
+        PimCustomer::query()->create([
+            'identifier' => '410',
+            'first_name' => 'Existing',
+            'last_name' => 'Customer',
+            'email' => 'existing@example.com',
+            'custom_fields' => [
+                PimCustomerCustomFields::TYPE->value => PimCustomerType::CUSTOMER->value,
+            ],
+        ]);
+
+        $this->seedCustomerFiles(410, [
+            'shipping' => $this->billingFields(
+                uuid: '44444444444444444444444444444444',
+                name1: 'Shipping Only Spa',
+                name2: 'Sara',
+                street: 'Via Shipping 2',
+                zip: '39200',
+                city: 'Merano',
+                countryIso: 'IT',
+                email: 'sara@example.com',
+                vat: 'IT44444444444'
+            ),
+            'shipping_references' => $this->billingReferencePayload('IT'),
+        ]);
+
+        $result = $this->app->make(CustomerImporter::class)->importOne(410);
+
+        $this->assertSame([], $result->errors);
+
+        $customer = PimCustomer::query()->where('identifier', '410')->first();
+        $this->assertNotNull($customer);
+        $this->assertNotNull($customer->default_shipping_address_id);
+        $this->assertSame(
+            $customer->default_shipping_address_id,
+            $customer->default_billing_address_id
+        );
     }
 
     /**

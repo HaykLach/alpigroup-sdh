@@ -346,12 +346,30 @@ final class CustomerImporter
         $address = PimCustomerAddress::query()->updateOrCreate($search, $data);
 
         $columns = $this->getCustomerColumns();
-        if ($type === 'billing' && in_array('default_billing_address_id', $columns, true)) {
-            $customer->default_billing_address_id = $address->id;
+        if ($type === 'billing') {
+            if (in_array('default_billing_address_id', $columns, true)) {
+                $customer->default_billing_address_id = $address->id;
+            }
+
+            if (
+                in_array('default_shipping_address_id', $columns, true)
+                && $customer->default_shipping_address_id === null
+            ) {
+                $customer->default_shipping_address_id = $address->id;
+            }
         }
 
-        if ($type === 'shipping' && in_array('default_shipping_address_id', $columns, true)) {
-            $customer->default_shipping_address_id = $address->id;
+        if ($type === 'shipping') {
+            if (in_array('default_shipping_address_id', $columns, true)) {
+                $customer->default_shipping_address_id = $address->id;
+            }
+
+            if (
+                in_array('default_billing_address_id', $columns, true)
+                && $customer->default_billing_address_id === null
+            ) {
+                $customer->default_billing_address_id = $address->id;
+            }
         }
 
         if (in_array('default_address_id', $columns, true) && $customer->default_address_id === null) {
