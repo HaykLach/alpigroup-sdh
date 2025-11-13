@@ -43,6 +43,7 @@ class ImportCustomerReferencesCommand extends Command
     private array $cacheShippingAddrByCustomer = [];
     private array $cacheDeliveryAddrById = [];
     private array $cacheAddressReferenceByUri = [];
+    private array $cacheBillingReferenceByCustomerAndName = [];
 
     public function handle(): int
     {
@@ -101,7 +102,7 @@ class ImportCustomerReferencesCommand extends Command
             $paymentMethod = $this->fetchPaymentMethod($paymentId, $folderName);
             $currency = $this->fetchCurrency($customerId, $folderName);
             $billing = $this->fetchBillingAddress($customerId, $folderName);
-            $billingReferences = $this->fetchBillingAddressReferences($billing, $folderName);
+            $billingReferences = $this->fetchBillingAddressReferences($billing, $folderName, $customerId);
             $shipping = $this->fetchShippingAddress($customerId, $folderName, $fields);
             $delivery = $this->fetchDeliveryAddresses($deliveryReferences, $folderName);
 
@@ -268,7 +269,7 @@ class ImportCustomerReferencesCommand extends Command
         return $resource;
     }
 
-    private function fetchBillingAddressReferences(?array $billing, string $folderName): ?array
+    private function fetchBillingAddressReferences(?array $billing, string $folderName, int|string $customerId): ?array
     {
         $references = $this->extractAddressReferences($billing);
 
@@ -282,11 +283,15 @@ class ImportCustomerReferencesCommand extends Command
             $name = is_string($reference['Name'] ?? null) ? $reference['Name'] : null;
             $uri = is_string($reference['URI'] ?? null) ? $reference['URI'] : null;
 
-            if ($name === null || $uri === null) {
+            if ($name === null) {
                 continue;
             }
 
-            $resource = $this->getReferenceByUri($uri, 200);
+            $resource = $this->getBillingAddressReferenceByName($customerId, $name, 200);
+
+            if ($resource === null && $uri !== null) {
+                $resource = $this->getReferenceByUri($uri, 200);
+            }
 
             if ($resource !== null) {
                 $resolved[$name] = $resource;
@@ -713,6 +718,55 @@ class ImportCustomerReferencesCommand extends Command
         }
 
         $this->cacheAddressReferenceByUri[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    private function getBillingAddressReferenceByName(int|string $customerId, string $name, int $sleepMs = 0): ?array
+    {
+        $method = match (strtolower($name)) {
+            'geburtsland' => 'requestCustomerBillingAddressGeburtsland',
+            'region' => 'requestCustomerBillingAddressRegion',
+            'provinz' => 'requestCustomerBillingAddressProvinz',
+            'gemeinde' => 'requestCustomerBillingAddressGemeinde',
+            'dateperiod' => 'requestCustomerBillingAddressDatePeriod',
+            default => null,
+        };
+
+        if ($method === null) {
+            return null;
+        }
+
+        $cacheKey = sprintf('%s|%s', (string)$customerId, $method);
+
+        if (array_key_exists($cacheKey, $this->cacheBillingReferenceByCustomerAndName)) {
+            return $this->cacheBillingReferenceByCustomerAndName[$cacheKey];
+        }
+
+        try {
+            $raw = $this->connector->{$method}($customerId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis billing reference request failed', [
+                'customerId' => $customerId,
+                'reference' => $name,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheBillingReferenceByCustomerAndName[$cacheKey] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheBillingReferenceByCustomerAndName[$cacheKey] = $decoded;
 
         if ($sleepMs > 0) {
             usleep($sleepMs * 1000);
