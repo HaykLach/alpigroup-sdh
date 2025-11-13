@@ -24,6 +24,7 @@ final class CustomerImporter
 {
     private const BASE_PATH = 'ombis_customers/upload';
     private const BILLING_FILE = 'refs/billing_address.json';
+    private const BILLING_REFERENCES_FILE = 'refs/billing_address_references.json';
     private const SHIPPING_FILE = 'refs/shipping_address.json';
     private const PAYMENT_FILE = 'refs/payment_method.json';
     private const CURRENCY_FILE = 'refs/currency.json';
@@ -75,11 +76,16 @@ final class CustomerImporter
         }
 
         $billingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::BILLING_FILE, 'billing');
+        $billingReferencesPayload = $this->loadBillingReferences($result, $customerId, $directory . '/' . self::BILLING_REFERENCES_FILE);
         $shippingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::SHIPPING_FILE, 'shipping');
         $paymentPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::PAYMENT_FILE, 'payment');
         $currencyPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::CURRENCY_FILE, 'currency');
 
         $billingFields = $this->extractFields($billingPayload);
+        $billingReferenceFields = $this->extractBillingReferenceFields($billingReferencesPayload);
+        if ($billingReferenceFields !== []) {
+            $billingFields = $this->mergeBillingFieldsWithReferences($billingFields, $billingReferenceFields);
+        }
         $shippingFields = $this->extractFields($shippingPayload);
         $paymentFields = $this->extractFields($paymentPayload);
         $currencyFields = $this->extractFields($currencyPayload);
@@ -487,6 +493,90 @@ final class CustomerImporter
             'status' => $status,
             'message' => $message,
         ];
+    }
+
+    private function loadBillingReferences(ImportResultDTO $result, int $customerId, string $path): ?array
+    {
+        $disk = Storage::disk('local');
+        if (! $disk->exists($path)) {
+            return null;
+        }
+
+        $payload = $this->readJsonOrNull($path, $customerId);
+        if ($payload === null) {
+            $result->warnings[] = sprintf('Unable to load %s for customer %d.', basename($path), $customerId);
+        }
+
+        return $payload;
+    }
+
+    private function extractBillingReferenceFields(?array $payload): array
+    {
+        if ($payload === null) {
+            return [];
+        }
+
+        $fields = [];
+
+        $land = $this->extractFields($payload['Land'] ?? null);
+        if ($land !== null) {
+            $iso = $this->stringOrNull($land['ISOCode'] ?? null);
+            if ($iso !== null) {
+                $fields['Land.ISOCode'] = $iso;
+            }
+
+            $name = $this->stringOrNull($land['DisplayName'] ?? $land['Name'] ?? null);
+            if ($name !== null) {
+                $fields['Land.Name'] = $name;
+            }
+        }
+
+        $region = $this->extractFields($payload['Region'] ?? null);
+        if ($region !== null) {
+            $regionName = $this->stringOrNull($region['DisplayName'] ?? $region['Name'] ?? null);
+            if ($regionName !== null) {
+                $fields['Region'] = $regionName;
+            }
+        }
+
+        $province = $this->extractFields($payload['Provinz'] ?? null);
+        if ($province !== null) {
+            $provinceName = $this->stringOrNull($province['DisplayName'] ?? $province['Name'] ?? null);
+            if ($provinceName !== null) {
+                $fields['Provinz'] = $provinceName;
+            }
+        }
+
+        $municipality = $this->extractFields($payload['Gemeinde'] ?? null);
+        if ($municipality !== null) {
+            $city = $this->stringOrNull($municipality['DisplayName'] ?? $municipality['Name'] ?? null);
+            if ($city !== null) {
+                $fields['Ort'] = $city;
+            }
+
+            $zip = $this->stringOrNull($municipality['PLZ'] ?? null);
+            if ($zip !== null) {
+                $fields['PLZ'] = $zip;
+            }
+        }
+
+        return $fields;
+    }
+
+    private function mergeBillingFieldsWithReferences(?array $billingFields, array $referenceFields): ?array
+    {
+        if ($billingFields === null) {
+            return $referenceFields === [] ? null : $referenceFields;
+        }
+
+        foreach ($referenceFields as $key => $value) {
+            $current = $billingFields[$key] ?? null;
+            if ($this->stringOrNull($current) === null) {
+                $billingFields[$key] = $value;
+            }
+        }
+
+        return $billingFields;
     }
 
     private function looksLikeAddress(array $fields): bool
