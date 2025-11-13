@@ -23,10 +23,10 @@ use Throwable;
 final class CustomerImporter
 {
     private const BASE_PATH = 'ombis_customers/upload';
-    private const BILLING_FILE = 'billing_address.json';
-    private const SHIPPING_FILE = 'shipping_address.json';
-    private const PAYMENT_FILE = 'payment_method.json';
-    private const CURRENCY_FILE = 'currency.json';
+    private const BILLING_FILE = 'refs/billing_address.json';
+    private const SHIPPING_FILE = 'refs/shipping_address.json';
+    private const PAYMENT_FILE = 'refs/payment_method.json';
+    private const CURRENCY_FILE = 'refs/currency.json';
 
     /**
      * @var array<int, string>|null
@@ -186,6 +186,7 @@ final class CustomerImporter
 
     private function upsertCustomer(int $customerId, ?array $billingFields, ImportResultDTO $result): ?PimCustomer
     {
+        /** @var PimCustomer $existing */
         $existing = PimCustomer::query()->where('identifier', (string) $customerId)->first();
         $attributes = $this->mapToCustomer($customerId, $billingFields);
 
@@ -282,7 +283,7 @@ final class CustomerImporter
         return $attributes;
     }
 
-    private function syncAddress(PimCustomer $customer, array $fields, string $type, ImportResultDTO $result): bool
+    private function syncAddress(PimCustomer $customer, array $fields, string $type, ImportResultDTO $result): void
     {
         $attributes = $this->mapToAddress($fields, $type);
         $attributes['customer_id'] = $customer->id;
@@ -300,7 +301,7 @@ final class CustomerImporter
             $result->warnings[] = $message;
             $this->setSection($result, $type, 'warning', 'missing fields');
 
-            return false;
+            return;
         }
 
         $search = ['customer_id' => $customer->id];
@@ -337,8 +338,6 @@ final class CustomerImporter
         $result->createdOrUpdated = true;
         $result->messages[] = sprintf('%s address synced.', ucfirst($type));
         $this->setSection($result, $type, 'success', 'synced');
-
-        return true;
     }
 
     private function syncShippingPreference(PimCustomer $customer, array $fields, ImportResultDTO $result): void
