@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Console\Commands\OmbisCustomers;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use SmartDato\Ombis\Ombis;
@@ -30,6 +31,8 @@ class ImportCustomerReferencesCommand extends Command
 
     private const DELIVERY_ADDRESSES_FILE = 'delivery_addresses.json';
 
+    private const BILLING_ADDRESS_REFERENCES_FILE = 'billing_address_references.json';
+
     private const REFERENCES_FILE = 'references.json';
 
     private Ombis $connector;
@@ -39,6 +42,7 @@ class ImportCustomerReferencesCommand extends Command
     private array $cacheBillingAddrByCustomer = [];
     private array $cacheShippingAddrByCustomer = [];
     private array $cacheDeliveryAddrById = [];
+    private array $cacheAddressReferenceByUri = [];
 
     public function handle(): int
     {
@@ -97,12 +101,14 @@ class ImportCustomerReferencesCommand extends Command
             $paymentMethod = $this->fetchPaymentMethod($paymentId, $folderName);
             $currency = $this->fetchCurrency($customerId, $folderName);
             $billing = $this->fetchBillingAddress($customerId, $folderName);
+            $billingReferences = $this->fetchBillingAddressReferences($billing, $folderName);
             $shipping = $this->fetchShippingAddress($customerId, $folderName, $fields);
             $delivery = $this->fetchDeliveryAddresses($deliveryReferences, $folderName);
 
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::PAYMENT_METHOD_FILE, $paymentMethod, $folderName, 'payment method');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::CURRENCY_FILE, $currency, $folderName, 'currency');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::BILLING_ADDRESS_FILE, $billing, $folderName, 'billing address');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::BILLING_ADDRESS_REFERENCES_FILE, $billingReferences, $folderName, 'billing address references');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::SHIPPING_ADDRESS_FILE, $shipping, $folderName, 'shipping address');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::DELIVERY_ADDRESSES_FILE, $delivery, $folderName, 'delivery addresses');
 
@@ -110,6 +116,7 @@ class ImportCustomerReferencesCommand extends Command
                 'payment_method' => $paymentMethod,
                 'currency' => $currency,
                 'billing_address' => $billing,
+                'billing_address_references' => $billingReferences,
                 'shipping_address' => $shipping,
                 'delivery_addresses' => $delivery,
             ];
@@ -259,6 +266,40 @@ class ImportCustomerReferencesCommand extends Command
         }
 
         return $resource;
+    }
+
+    private function fetchBillingAddressReferences(?array $billing, string $folderName): ?array
+    {
+        $references = $this->extractAddressReferences($billing);
+
+        if ($references === []) {
+            return null;
+        }
+
+        $resolved = [];
+
+        foreach ($references as $reference) {
+            $name = is_string($reference['Name'] ?? null) ? $reference['Name'] : null;
+            $uri = is_string($reference['URI'] ?? null) ? $reference['URI'] : null;
+
+            if ($name === null || $uri === null) {
+                continue;
+            }
+
+            $resource = $this->getReferenceByUri($uri, 200);
+
+            if ($resource !== null) {
+                $resolved[$name] = $resource;
+                continue;
+            }
+
+            Log::warning('Invalid response received for Ombis customer reference.', [
+                'customer_folder' => $folderName,
+                'resource' => sprintf('billing %s reference', $name),
+            ]);
+        }
+
+        return $resolved === [] ? null : $resolved;
     }
 
     private function fetchShippingAddress(int|string $customerId, string $folderName, array $fields): ?array
@@ -520,6 +561,158 @@ class ImportCustomerReferencesCommand extends Command
 
         $decoded = $this->toArray($raw);
         $this->cacheDeliveryAddrById[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @param array<string, mixed>|null $resource
+     * @return array<int, array<string, mixed>>
+     */
+    private function extractAddressReferences(?array $resource): array
+    {
+        if (!is_array($resource)) {
+            return [];
+        }
+
+        $links = is_array($resource['Links'] ?? null) ? $resource['Links'] : null;
+        $references = is_array($links['References'] ?? null) ? $links['References'] : null;
+
+        if ($references === null) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $references,
+            static fn ($reference) => is_array($reference)
+        ));
+    }
+
+    private function resolveReferenceUri(?string $uri): ?string
+    {
+        if (!is_string($uri) || $uri === '') {
+            return null;
+        }
+
+        if (str_starts_with($uri, 'http://') || str_starts_with($uri, 'https://')) {
+            return $uri;
+        }
+
+        $base = config('services.ombis.url', env('OMBIS_API_URL'));
+
+        if (!is_string($base) || $base === '') {
+            return null;
+        }
+
+        $parsed = parse_url($base);
+
+        if ($parsed === false || !isset($parsed['scheme'], $parsed['host'])) {
+            return null;
+        }
+
+        $authority = $parsed['scheme'] . '://' . $parsed['host'];
+        if (isset($parsed['port'])) {
+            $authority .= ':' . $parsed['port'];
+        }
+
+        if (str_starts_with($uri, '/')) {
+            return $authority . $uri;
+        }
+
+        $path = $parsed['path'] ?? '';
+        $prefix = rtrim($authority . '/' . ltrim($path, '/'), '/');
+
+        return $prefix . '/' . ltrim($uri, '/');
+    }
+
+    private function getReferenceByUri(string $uri, int $sleepMs = 0): ?array
+    {
+        $key = $uri;
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (array_key_exists($key, $this->cacheAddressReferenceByUri)) {
+            return $this->cacheAddressReferenceByUri[$key];
+        }
+
+        $endpoint = $this->resolveReferenceUri($uri);
+
+        if ($endpoint === null) {
+            $this->cacheAddressReferenceByUri[$key] = null;
+
+            return null;
+        }
+
+        $username = config('services.ombis.username', env('OMBIS_API_USER'));
+        $password = config('services.ombis.password', env('OMBIS_API_PASSWORD'));
+
+        if (!is_string($username) || $username === '' || !is_string($password) || $password === '') {
+            Log::warning('Ombis reference credentials missing.');
+            $this->cacheAddressReferenceByUri[$key] = null;
+
+            return null;
+        }
+
+        try {
+            $response = Http::withBasicAuth($username, $password)
+                ->acceptJson()
+                ->timeout(30)
+                ->get($endpoint);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis reference request failed', [
+                'uri' => $uri,
+                'exception' => $exception->getMessage(),
+            ]);
+
+            $this->cacheAddressReferenceByUri[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        if (!$response->successful()) {
+            Log::warning('Ombis reference request failed', [
+                'uri' => $uri,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            $this->cacheAddressReferenceByUri[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $response->json();
+
+        if (!is_array($decoded)) {
+            Log::warning('Ombis decode failed', [
+                'err' => 'reference response not an array',
+                'uri' => $uri,
+            ]);
+
+            $this->cacheAddressReferenceByUri[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $this->cacheAddressReferenceByUri[$key] = $decoded;
 
         if ($sleepMs > 0) {
             usleep($sleepMs * 1000);
