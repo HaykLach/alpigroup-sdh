@@ -48,6 +48,7 @@ final class CustomerImporterTest extends TestCase
                 email: 'karin.patscheider@pedross.com',
                 vat: 'IT00223300211'
             ),
+            'billing_references' => $this->billingReferencePayload('IT'),
             'shipping' => $this->shippingFields(code: 'ABHOL', name: 'Abholung Kunde'),
             'payment' => $this->paymentFields(code: 'UE', name: 'Überweisung'),
             'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
@@ -103,6 +104,7 @@ final class CustomerImporterTest extends TestCase
                 email: 'elisa@example.com',
                 vat: 'IT12345678901'
             ),
+            'billing_references' => $this->billingReferencePayload('IT'),
             'shipping' => $this->shippingFields(code: 'COURIER', name: 'Courier'),
             'payment' => $this->paymentFields(code: 'INV', name: 'Invoice'),
             'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
@@ -120,6 +122,7 @@ final class CustomerImporterTest extends TestCase
                 email: 'bernd@example.de',
                 vat: 'DE123456789'
             ),
+            'billing_references' => $this->billingReferencePayload('DE'),
             'shipping' => $this->shippingFields(code: 'PICKUP', name: 'Abholung'),
             'payment' => $this->paymentFields(code: 'COD', name: 'Cash on Delivery'),
             'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
@@ -139,7 +142,8 @@ final class CustomerImporterTest extends TestCase
     {
         $directory = 'ombis_customers/upload/customer_403';
         Storage::disk('local')->makeDirectory($directory);
-        Storage::disk('local')->put($directory . '/shipping_address.json', $this->encodeJson($this->wrapPayload($this->shippingFields('ABHOL', 'Pickup'))));
+        Storage::disk('local')->makeDirectory($directory . '/refs');
+        Storage::disk('local')->put($directory . '/refs/shipping_address.json', $this->encodeJson($this->wrapPayload($this->shippingFields('ABHOL', 'Pickup'))));
 
         $result = $this->app->make(CustomerImporter::class)->importOne(403);
 
@@ -155,7 +159,8 @@ final class CustomerImporterTest extends TestCase
 
         $directory = 'ombis_customers/upload/customer_404';
         Storage::disk('local')->makeDirectory($directory);
-        Storage::disk('local')->put($directory . '/billing_address.json', $this->encodeJson($this->wrapPayload($this->billingFields(
+        Storage::disk('local')->makeDirectory($directory . '/refs');
+        Storage::disk('local')->put($directory . '/refs/billing_address.json', $this->encodeJson($this->wrapPayload($this->billingFields(
             uuid: 'cccccccccccccccccccccccccccccccc',
             name1: 'Malformed Spa',
             name2: 'Mario',
@@ -166,9 +171,10 @@ final class CustomerImporterTest extends TestCase
             email: 'mario@example.com',
             vat: 'IT98765432100'
         ))));
-        Storage::disk('local')->put($directory . '/shipping_address.json', $this->encodeJson($this->wrapPayload($this->shippingFields('COURIER', 'Courier'))));
-        Storage::disk('local')->put($directory . '/currency.json', $this->encodeJson($this->wrapPayload($this->currencyFields('EUR', 'Euro'))));
-        Storage::disk('local')->put($directory . '/payment_method.json', '{invalid');
+        Storage::disk('local')->put($directory . '/refs/billing_address_references.json', $this->encodeJson($this->billingReferencePayload('IT')));
+        Storage::disk('local')->put($directory . '/refs/shipping_address.json', $this->encodeJson($this->wrapPayload($this->shippingFields('COURIER', 'Courier'))));
+        Storage::disk('local')->put($directory . '/refs/currency.json', $this->encodeJson($this->wrapPayload($this->currencyFields('EUR', 'Euro'))));
+        Storage::disk('local')->put($directory . '/refs/payment_method.json', '{invalid');
 
         $result = $this->app->make(CustomerImporter::class)->importOne(404);
 
@@ -179,8 +185,6 @@ final class CustomerImporterTest extends TestCase
 
     public function test_import_is_idempotent(): void
     {
-        PimCountry::query()->create(['name' => 'Italy', 'iso' => 'IT']);
-
         $this->seedCustomerFiles(405, [
             'billing' => $this->billingFields(
                 uuid: 'dddddddddddddddddddddddddddddddd',
@@ -193,6 +197,7 @@ final class CustomerImporterTest extends TestCase
                 email: 'ida@example.com',
                 vat: 'IT11122233344'
             ),
+            'billing_references' => $this->billingReferencePayload('IT'),
             'shipping' => $this->shippingFields(code: 'COURIER', name: 'Courier'),
             'payment' => $this->paymentFields(code: 'BANK', name: 'Bank Transfer'),
             'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
@@ -212,28 +217,76 @@ final class CustomerImporterTest extends TestCase
         $this->assertSame(1, PimCustomerAddress::query()->where('customer_id', $customer->id)->count());
     }
 
+    public function test_import_enriches_billing_fields_with_reference_payload(): void
+    {
+        PimCountry::query()->create(['name' => 'Italy', 'iso' => 'IT']);
+
+        $billing = $this->billingFields(
+            uuid: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+            name1: 'Referenced Spa',
+            name2: 'Rita',
+            street: 'Via Firenze 10',
+            zip: '',
+            city: '',
+            countryIso: '',
+            email: 'rita@example.com',
+            vat: 'IT55566677788'
+        );
+        unset($billing['Land.ISOCode']);
+        unset($billing['Ort']);
+        unset($billing['PLZ']);
+
+        $this->seedCustomerFiles(406, [
+            'billing' => $billing,
+            'billing_references' => $this->billingReferencePayload('IT', region: 'Trentino', province: 'Bozen', city: 'Latsch', zip: '39021'),
+            'shipping' => $this->shippingFields(code: 'COURIER', name: 'Courier'),
+            'payment' => $this->paymentFields(code: 'CARD', name: 'Credit Card'),
+            'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
+        ]);
+
+        $result = $this->app->make(CustomerImporter::class)->importOne(406);
+
+        $this->assertSame([], $result->errors);
+        $this->assertSame([], $result->warnings);
+
+        $customer = PimCustomer::query()->where('identifier', '406')->first();
+        $this->assertNotNull($customer);
+
+        $address = PimCustomerAddress::query()->where('customer_id', $customer->id)->first();
+        $this->assertNotNull($address);
+        $this->assertSame('Latsch', $address->city);
+        $this->assertSame('39021', $address->zipcode);
+        $this->assertNotNull($address->country_id);
+    }
+
     /**
      * @param array<string, mixed> $payloads
      */
     private function seedCustomerFiles(int $customerId, array $payloads): void
     {
         $directory = 'ombis_customers/upload/customer_' . $customerId;
+        $refsDirectory = $directory . '/refs';
         Storage::disk('local')->makeDirectory($directory);
+        Storage::disk('local')->makeDirectory($refsDirectory);
 
         if (isset($payloads['billing'])) {
-            Storage::disk('local')->put($directory . '/billing_address.json', $this->encodeJson($this->wrapPayload($payloads['billing'])));
+            Storage::disk('local')->put($refsDirectory . '/billing_address.json', $this->encodeJson($this->wrapPayload($payloads['billing'])));
         }
 
         if (isset($payloads['shipping'])) {
-            Storage::disk('local')->put($directory . '/shipping_address.json', $this->encodeJson($this->wrapPayload($payloads['shipping'])));
+            Storage::disk('local')->put($refsDirectory . '/shipping_address.json', $this->encodeJson($this->wrapPayload($payloads['shipping'])));
         }
 
         if (isset($payloads['payment'])) {
-            Storage::disk('local')->put($directory . '/payment_method.json', $this->encodeJson($this->wrapPayload($payloads['payment'])));
+            Storage::disk('local')->put($refsDirectory . '/payment_method.json', $this->encodeJson($this->wrapPayload($payloads['payment'])));
         }
 
         if (isset($payloads['currency'])) {
-            Storage::disk('local')->put($directory . '/currency.json', $this->encodeJson($this->wrapPayload($payloads['currency'])));
+            Storage::disk('local')->put($refsDirectory . '/currency.json', $this->encodeJson($this->wrapPayload($payloads['currency'])));
+        }
+
+        if (isset($payloads['billing_references'])) {
+            Storage::disk('local')->put($refsDirectory . '/billing_address_references.json', $this->encodeJson($payloads['billing_references']));
         }
     }
 
@@ -316,6 +369,47 @@ final class CustomerImporterTest extends TestCase
             'URI' => '/fake/resource',
             'Fields' => $fields,
         ];
+    }
+
+    private function billingReferencePayload(
+        string $countryIso,
+        string $region = 'Trentino-Südtirol',
+        string $province = 'Bozen',
+        ?string $city = null,
+        ?string $zip = null
+    ): array {
+        $land = [
+            'Fields' => [
+                'ISOCode' => $countryIso,
+                'DisplayName' => $countryIso,
+            ],
+        ];
+
+        $regionPayload = [
+            'Fields' => [
+                'DisplayName' => $region,
+            ],
+        ];
+
+        $provincePayload = [
+            'Fields' => [
+                'DisplayName' => $province,
+            ],
+        ];
+
+        $cityFields = array_filter([
+            'DisplayName' => $city,
+            'PLZ' => $zip,
+        ], static fn ($value) => $value !== null);
+
+        $municipality = $cityFields === [] ? null : ['Fields' => $cityFields];
+
+        return array_filter([
+            'Land' => $land,
+            'Region' => $regionPayload,
+            'Provinz' => $provincePayload,
+            'Gemeinde' => $municipality,
+        ]);
     }
 
     private function encodeJson(array $data): string
