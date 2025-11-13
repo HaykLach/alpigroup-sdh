@@ -259,6 +259,63 @@ final class CustomerImporterTest extends TestCase
         $this->assertNotNull($address->country_id);
     }
 
+    public function test_import_enriches_shipping_fields_with_reference_payload(): void
+    {
+        PimCountry::query()->create(['name' => 'Italy', 'iso' => 'IT']);
+
+        $billing = $this->billingFields(
+            uuid: 'ffffffffffffffffffffffffffffffff',
+            name1: 'Shipping Spa',
+            name2: 'Sibylle',
+            street: 'Via Verona 1',
+            zip: '37100',
+            city: 'Verona',
+            countryIso: 'IT',
+            email: 'sibylle@example.com',
+            vat: 'IT00011122233'
+        );
+
+        $shipping = $this->billingFields(
+            uuid: '11111111111111111111111111111111',
+            name1: 'Shipping Spa',
+            name2: 'Sibylle',
+            street: 'Via Bolzano 5',
+            zip: '',
+            city: '',
+            countryIso: '',
+            email: 'sibylle@example.com',
+            vat: 'IT00011122233'
+        );
+        unset($shipping['Land.ISOCode']);
+        unset($shipping['PLZ']);
+        unset($shipping['Ort']);
+
+        $this->seedCustomerFiles(407, [
+            'billing' => $billing,
+            'billing_references' => $this->billingReferencePayload('IT'),
+            'shipping' => $shipping,
+            'shipping_references' => $this->billingReferencePayload('IT', region: 'Veneto', province: 'Verona', city: 'Bolzano', zip: '39100'),
+            'payment' => $this->paymentFields(code: 'CARD', name: 'Credit Card'),
+            'currency' => $this->currencyFields(iso: 'EUR', name: 'Euro'),
+        ]);
+
+        $result = $this->app->make(CustomerImporter::class)->importOne(407);
+
+        $this->assertSame([], $result->errors);
+
+        $customer = PimCustomer::query()->where('identifier', '407')->first();
+        $this->assertNotNull($customer);
+        $this->assertNotNull($customer->default_shipping_address_id);
+
+        $shippingAddress = PimCustomerAddress::query()->find($customer->default_shipping_address_id);
+        $this->assertNotNull($shippingAddress);
+        $this->assertSame('Bolzano', $shippingAddress->city);
+        $this->assertSame('39100', $shippingAddress->zipcode);
+        $this->assertSame('Veneto', $shippingAddress->region);
+        $this->assertNotNull($shippingAddress->country_id);
+        $this->assertSame(2, PimCustomerAddress::query()->where('customer_id', $customer->id)->count());
+    }
+
     /**
      * @param array<string, mixed> $payloads
      */
@@ -287,6 +344,10 @@ final class CustomerImporterTest extends TestCase
 
         if (isset($payloads['billing_references'])) {
             Storage::disk('local')->put($refsDirectory . '/billing_address_references.json', $this->encodeJson($payloads['billing_references']));
+        }
+
+        if (isset($payloads['shipping_references'])) {
+            Storage::disk('local')->put($refsDirectory . '/shipping_address_references.json', $this->encodeJson($payloads['shipping_references']));
         }
     }
 
