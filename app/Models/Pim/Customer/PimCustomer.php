@@ -15,7 +15,9 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Facades\DB;
+use SmartDato\Shopware6\App\Models\Shopware6Customers\Shopware6CustomersExtension;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 use Spatie\MediaLibrary\MediaCollections\Models\Media;
@@ -188,5 +190,15 @@ class PimCustomer extends Model implements HasMedia
     public function agent(): BelongsTo
     {
         return $this->belongsTo(PimAgent::class, 'agent_id', 'id');
+    }
+
+    public function defaultBillingAddress(): BelongsTo
+    {
+        return $this->belongsTo(PimCustomerAddress::class,'default_billing_address_id', 'id');
+    }
+
+    public function defaultShippingAddress(): BelongsTo
+    {
+        return $this->belongsTo(PimCustomerAddress::class,'default_shipping_address_id', 'id');
     }
 }

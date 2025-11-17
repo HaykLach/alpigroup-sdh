@@ -7,6 +7,7 @@ use App\Contracts\Country\CountryRepositoryInterface;
 use App\Contracts\Currency\CurrencyRepositoryInterface;
 use App\Contracts\Customer\CustomerRepositoryInterface;
 use App\Contracts\CustomerAddress\CustomerAddressRepositoryInterface;
+use App\Contracts\CustomerGroup\CustomerGroupRepositoryInterface;
 use App\Contracts\Job\JobLogRepositoryInterface;
 use App\Contracts\Job\JobRepositoryInterface;
 use App\Contracts\Language\LanguageRepositoryInterface;
@@ -27,6 +28,7 @@ use App\Repositories\Country\CountryRepository;
 use App\Repositories\Currency\CurrencyRepository;
 use App\Repositories\Customer\CustomerRepository;
 use App\Repositories\CustomerAddress\CustomerAddressRepository;
+use App\Repositories\CustomerGroup\CustomerGroupRepository;
 use App\Repositories\Job\JobLogRepository;
 use App\Repositories\Job\JobRepository;
 use App\Repositories\Language\LanguageRepository;
@@ -42,6 +44,8 @@ use App\Repositories\Property\PropertyGroupRepository;
 use App\Repositories\SalesChannel\SalesChannelRepository;
 use App\Repositories\Salutation\SalutationRepository;
 use App\Repositories\Tax\TaxRepository;
+use App\Services\Export\PimCustomerExportService;
+use App\Services\Import\CustomerImportManager;
 use Filament\Support\Assets\Css;
 use Filament\Support\Facades\FilamentAsset;
 use Filament\Support\View\Components\Modal;
@@ -49,6 +53,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
+use SmartDato\Shopware6\Contracts\Customer\CustomerExportManagerInterface;
+use SmartDato\Shopware6\Contracts\Customer\CustomerManagerInterface;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -95,6 +101,7 @@ class AppServiceProvider extends ServiceProvider
 
         // $this->bootSuperAdmin(); // uncomment to grant access to @smart-dato.com users
         $this->bootRepositories();
+        $this->bootServices();
     }
 
     private function bootRepositories(): void
@@ -119,6 +126,12 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(OrderTransactionRepositoryInterface::class, OrderTransactionRepository::class);
         $this->app->bind(OrderRepositoryInterface::class, OrderRepository::class);
         $this->app->bind(JobLogRepositoryInterface::class, JobLogRepository::class);
+        $this->app->bind(CustomerGroupRepositoryInterface::class, CustomerGroupRepository::class);
+    }
+
+    private function bootServices(): void
+    {
+        $this->app->bind(CustomerExportManagerInterface::class, PimCustomerExportService::class);
     }
 
     /**
