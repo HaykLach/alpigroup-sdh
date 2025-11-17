@@ -1,5 +1,6 @@
 <?php
 
+use Carbon\Carbon;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -108,6 +109,12 @@ return [
         'errorlog' => [
             'driver' => 'errorlog',
             'level' => env('LOG_LEVEL', 'debug'),
+        ],
+
+        'ombis-sdk' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/' . Carbon::now()->format('Y-m-d') . '-ombis-sdk.log'),
+            'level' => 'info',
         ],
 
         'null' => [

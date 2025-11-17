@@ -25,6 +25,7 @@ use Throwable;
 
 final class CustomerImporter
 {
+    private const LOG_CHANNEL = 'ombis-sdk';
     private const BASE_PATH = 'ombis_customers/upload';
     private const BILLING_FILE = 'refs/billing_address.json';
     private const BILLING_REFERENCES_FILE = 'refs/billing_address_references.json';
@@ -76,7 +77,7 @@ final class CustomerImporter
 
         if (! $disk->directoryExists($directory)) {
             $message = sprintf('Customer directory not found at %s.', $directory);
-            Log::warning('Ombis customer import directory missing.', [
+            $this->logWarning('Ombis customer import directory missing.', [
                 'customer_id' => $customerId,
                 'path' => $directory,
             ]);
@@ -151,7 +152,7 @@ final class CustomerImporter
                 }
             });
         } catch (Throwable $exception) {
-            Log::error('Failed to import Ombis customer.', [
+            $this->logError('Failed to import Ombis customer.', [
                 'customer_id' => $customerId,
                 'exception' => $exception->getMessage(),
             ]);
@@ -215,8 +216,13 @@ final class CustomerImporter
         $existing = PimCustomer::query()->where('identifier', (string) $customerId)->first();
         $attributes = $this->mapToCustomer($customerId, $billingFields);
 
-        if ($existing === null && $this->requiresCustomerFieldsMissing($attributes)) {
+        $missingFields = $this->missingCustomerFields($attributes);
+        if ($existing === null && $missingFields !== []) {
             $result->warnings[] = sprintf('Customer %d missing required fields. Skipping customer creation.', $customerId);
+            $this->logWarning('Customer missing required fields.', [
+                'customer_id' => $customerId,
+                'missing_fields' => $missingFields,
+            ]);
 
             return null;
         }
@@ -324,6 +330,11 @@ final class CustomerImporter
         if ($missing !== []) {
             $message = sprintf('%s address missing required fields: %s.', ucfirst($type), implode(', ', $missing));
             $result->warnings[] = $message;
+            $this->logWarning('Customer address missing required fields.', [
+                'customer_id' => $customer->id,
+                'address_type' => $type,
+                'missing_fields' => $missing,
+            ]);
             $this->setSection($result, $type, 'warning', 'missing fields');
 
             return;
@@ -393,6 +404,9 @@ final class CustomerImporter
 
         if ($updates === []) {
             $result->warnings[] = 'Shipping reference missing recognizable fields.';
+            $this->logWarning('Shipping reference missing recognizable fields.', [
+                'customer_id' => $customer->id,
+            ]);
             $this->setSection($result, 'shipping', 'warning', 'no data');
 
             return;
@@ -415,6 +429,9 @@ final class CustomerImporter
 
         if ($updates === []) {
             $result->warnings[] = 'Currency reference missing recognizable fields.';
+            $this->logWarning('Currency reference missing recognizable fields.', [
+                'customer_id' => $customer->id,
+            ]);
             $this->setSection($result, 'currency', 'warning', 'no data');
 
             return;
@@ -433,6 +450,9 @@ final class CustomerImporter
         $attributes = $this->mapToPaymentMethod($fields);
         if ($attributes === []) {
             $result->warnings[] = 'Payment method missing required data.';
+            $this->logWarning('Payment method missing required data.', [
+                'customer_id' => $customer->id,
+            ]);
             $this->setSection($result, 'payment', 'warning', 'missing fields');
 
             return;
@@ -447,6 +467,10 @@ final class CustomerImporter
 
         if ($unique === []) {
             $result->warnings[] = 'Payment method missing identifier.';
+            $this->logWarning('Payment method missing identifier.', [
+                'customer_id' => $customer->id,
+                'payment_fields' => $fields,
+            ]);
             $this->setSection($result, 'payment', 'warning', 'missing identifier');
 
             return;
@@ -503,7 +527,7 @@ final class CustomerImporter
         $disk = Storage::disk('local');
         if (! $disk->exists($path)) {
             $message = sprintf('%s file missing for customer %d.', basename($path), $customerId);
-            Log::warning('Ombis customer import file missing.', [
+            $this->logWarning('Ombis customer import file missing.', [
                 'customer_id' => $customerId,
                 'path' => $path,
             ]);
@@ -844,7 +868,7 @@ final class CustomerImporter
         try {
             $contents = Storage::disk('local')->get($path);
         } catch (Throwable $exception) {
-            Log::warning('Unable to read Ombis customer file.', [
+            $this->logWarning('Unable to read Ombis customer file.', [
                 'customer_id' => $customerId,
                 'path' => $path,
                 'exception' => $exception->getMessage(),
@@ -856,7 +880,7 @@ final class CustomerImporter
         try {
             $decoded = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
         } catch (Throwable $exception) {
-            Log::error('Unable to decode Ombis customer JSON.', [
+            $this->logError('Unable to decode Ombis customer JSON.', [
                 'customer_id' => $customerId,
                 'path' => $path,
                 'exception' => $exception->getMessage(),
@@ -866,6 +890,32 @@ final class CustomerImporter
         }
 
         return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function missingCustomerFields(array $attributes): array
+    {
+        $required = ['identifier', 'email', 'custom_fields'];
+        $missing = [];
+        foreach ($required as $key) {
+            if (! array_key_exists($key, $attributes) || $attributes[$key] === null || $attributes[$key] === []) {
+                $missing[] = $key;
+            }
+        }
+
+        return $missing;
+    }
+
+    private function logWarning(string $message, array $context = []): void
+    {
+        Log::channel(self::LOG_CHANNEL)->warning($message, $context);
+    }
+
+    private function logError(string $message, array $context = []): void
+    {
+        Log::channel(self::LOG_CHANNEL)->error($message, $context);
     }
 
     private function stringOrNull(mixed $value): ?string
@@ -1013,18 +1063,6 @@ final class CustomerImporter
         }
 
         return $changed;
-    }
-
-    private function requiresCustomerFieldsMissing(array $attributes): bool
-    {
-        $required = ['identifier', 'email', 'custom_fields'];
-        foreach ($required as $key) {
-            if (! array_key_exists($key, $attributes) || $attributes[$key] === null || $attributes[$key] === []) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
