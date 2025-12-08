@@ -136,7 +136,7 @@ final class CustomerImporter
                 }
 
                 if ($shippingFields !== null) {
-                    if ($this->looksLikeAddress($shippingFields)) {
+                    if ($this->isValidAddress($shippingFields)) {
                         $this->syncAddress($customer, $shippingFields, 'shipping', $result);
                     } else {
                         $this->syncShippingPreference($customer, $shippingFields, $result);
@@ -270,21 +270,23 @@ final class CustomerImporter
 
         if ($billingFields !== null) {
             if (in_array('first_name', $columns, true)) {
-                $firstName = $this->stringOrNull($billingFields['Name2'] ?? $billingFields['Name1'] ?? null);
+                $firstName = $this->getValue($billingFields['Name1'] ?? $billingFields['Name2'] ?? null);
                 if ($firstName !== null) {
                     $attributes['first_name'] = $firstName;
                 }
             }
 
             if (in_array('last_name', $columns, true)) {
-                $lastName = $this->stringOrNull($billingFields['Name1'] ?? $billingFields['Name2'] ?? null);
-                if ($lastName !== null) {
-                    $attributes['last_name'] = $lastName;
+                $lastName = $this->getValue($billingFields['Name2'] ?? null);
+                if (isset($firstName) && $firstName === $lastName) {
+                    $lastName = '&nbsp;';
                 }
+
+                $attributes['last_name'] = $lastName;
             }
 
             if (in_array('email', $columns, true)) {
-                $email = $this->stringOrNull($billingFields['EMail'] ?? null);
+                $email = $this->getValue($billingFields['EMail'] ?? null);
                 if ($email !== null) {
                     $attributes['email'] = $email;
                 }
@@ -297,9 +299,9 @@ final class CustomerImporter
             ];
 
             if ($billingFields !== null) {
-                $customFields[PimCustomerCustomFields::COMPANY_NAME->value] = $this->stringOrNull($billingFields['Name1'] ?? null);
-                $customFields[PimCustomerCustomFields::FISCAL_CODE->value] = $this->stringOrNull($billingFields['Steuernummer'] ?? null);
-                $vat = $this->stringOrNull($billingFields['UStIDNummer'] ?? $billingFields['MwStNummer'] ?? null);
+                $customFields[PimCustomerCustomFields::COMPANY_NAME->value] = $this->getValue($billingFields['Name1'] ?? null);
+                $customFields[PimCustomerCustomFields::FISCAL_CODE->value] = $this->getValue($billingFields['Steuernummer'] ?? null);
+                $vat = $this->getValue($billingFields['UStIDNummer'] ?? $billingFields['MwStNummer'] ?? null);
                 $customFields[PimCustomerCustomFields::VAT_ID->value] = $vat;
                 $blocked = $this->normalizeBoolean($billingFields['Gesperrt'] ?? null);
                 $customFields[PimCustomerCustomFields::BLOCKED->value] = $blocked;
@@ -397,9 +399,9 @@ final class CustomerImporter
     private function syncShippingPreference(PimCustomer $customer, array $fields, ImportResultDTO $result): void
     {
         $updates = $this->filterNullValues([
-            PimCustomerCustomFields::SHIPPING_METHOD_CODE->value => $this->stringOrNull($fields['Code'] ?? null),
-            PimCustomerCustomFields::SHIPPING_METHOD_NAME->value => $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null),
-            PimCustomerCustomFields::SHIPPING_METHOD_PROVIDER->value => $this->stringOrNull($fields['TransportDurch'] ?? null),
+            PimCustomerCustomFields::SHIPPING_METHOD_CODE->value => $this->getValue($fields['Code'] ?? null),
+            PimCustomerCustomFields::SHIPPING_METHOD_NAME->value => $this->getValue($fields['Name'] ?? $fields['DisplayName'] ?? null),
+            PimCustomerCustomFields::SHIPPING_METHOD_PROVIDER->value => $this->getValue($fields['TransportDurch'] ?? null),
         ]);
 
         if ($updates === []) {
@@ -423,8 +425,8 @@ final class CustomerImporter
     private function applyCurrency(PimCustomer $customer, array $fields, ImportResultDTO $result): void
     {
         $updates = $this->filterNullValues([
-            PimCustomerCustomFields::CURRENCY_CODE->value => $this->stringOrNull($fields['ISOCode'] ?? null),
-            PimCustomerCustomFields::CURRENCY_NAME->value => $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null),
+            PimCustomerCustomFields::CURRENCY_CODE->value => $this->getValue($fields['ISOCode'] ?? null),
+            PimCustomerCustomFields::CURRENCY_NAME->value => $this->getValue($fields['Name'] ?? $fields['DisplayName'] ?? null),
         ]);
 
         if ($updates === []) {
@@ -485,8 +487,8 @@ final class CustomerImporter
         }
 
         $metadata = $this->filterNullValues([
-            PimCustomerCustomFields::PAYMENT_METHOD_CODE->value => $this->stringOrNull($fields['Code'] ?? null),
-            PimCustomerCustomFields::PAYMENT_METHOD_NAME->value => $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null),
+            PimCustomerCustomFields::PAYMENT_METHOD_CODE->value => $this->getValue($fields['Code'] ?? null),
+            PimCustomerCustomFields::PAYMENT_METHOD_NAME->value => $this->getValue($fields['Name'] ?? $fields['DisplayName'] ?? null),
         ]);
 
         if ($metadata !== []) {
@@ -506,14 +508,14 @@ final class CustomerImporter
         $attributes = [];
 
         if (in_array('name', $columns, true)) {
-            $name = $this->stringOrNull($fields['Name'] ?? $fields['DisplayName'] ?? null);
+            $name = $this->getValue($fields['Name'] ?? $fields['DisplayName'] ?? null);
             if ($name !== null) {
                 $attributes['name'] = $name;
             }
         }
 
         if (in_array('technical_name', $columns, true)) {
-            $technical = $this->stringOrNull($fields['Code'] ?? null);
+            $technical = $this->getValue($fields['Code'] ?? null);
             if ($technical !== null) {
                 $attributes['technical_name'] = $technical;
             }
@@ -581,12 +583,12 @@ final class CustomerImporter
 
         $land = $this->extractFields($payload['Land'] ?? null);
         if ($land !== null) {
-            $iso = $this->stringOrNull($land['ISOCode'] ?? null);
+            $iso = $this->getValue($land['ISOCode'] ?? null);
             if ($iso !== null) {
                 $fields['Land.ISOCode'] = $iso;
             }
 
-            $name = $this->stringOrNull($land['DisplayName'] ?? $land['Name'] ?? null);
+            $name = $this->getValue($land['DisplayName'] ?? $land['Name'] ?? null);
             if ($name !== null) {
                 $fields['Land.Name'] = $name;
             }
@@ -595,7 +597,7 @@ final class CustomerImporter
         $region = $this->extractFields($payload['Region'] ?? null);
         if ($region !== null) {
             $fields['RegionFields'] = $region;
-            $regionName = $this->stringOrNull($region['DisplayName'] ?? $region['Name'] ?? null);
+            $regionName = $this->getValue($region['DisplayName'] ?? $region['Name'] ?? null);
             if ($regionName !== null) {
                 $fields['Region'] = $regionName;
             }
@@ -603,7 +605,7 @@ final class CustomerImporter
 
         $province = $this->extractFields($payload['Provinz'] ?? null);
         if ($province !== null) {
-            $provinceName = $this->stringOrNull($province['DisplayName'] ?? $province['Name'] ?? null);
+            $provinceName = $this->getValue($province['DisplayName'] ?? $province['Name'] ?? null);
             if ($provinceName !== null) {
                 $fields['Provinz'] = $provinceName;
             }
@@ -611,12 +613,12 @@ final class CustomerImporter
 
         $municipality = $this->extractFields($payload['Gemeinde'] ?? null);
         if ($municipality !== null) {
-            $city = $this->stringOrNull($municipality['DisplayName'] ?? $municipality['Name'] ?? null);
+            $city = $this->getValue($municipality['DisplayName'] ?? $municipality['Name'] ?? null);
             if ($city !== null) {
                 $fields['Ort'] = $city;
             }
 
-            $zip = $this->stringOrNull($municipality['PLZ'] ?? null);
+            $zip = $this->getValue($municipality['PLZ'] ?? null);
             if ($zip !== null) {
                 $fields['PLZ'] = $zip;
             }
@@ -633,7 +635,7 @@ final class CustomerImporter
 
         foreach ($referenceFields as $key => $value) {
             $current = $billingFields[$key] ?? null;
-            if ($this->stringOrNull($current) === null) {
+            if ($this->getValue($current) === null) {
                 $billingFields[$key] = $value;
             }
         }
@@ -647,9 +649,9 @@ final class CustomerImporter
             return null;
         }
 
-        $name = $this->stringOrNull($regionFields['DisplayName'] ?? $regionFields['Name'] ?? null);
-        $externalId = $this->stringOrNull($regionFields['ID'] ?? null);
-        $code = $this->stringOrNull($regionFields['Code'] ?? null);
+        $name = $this->getValue($regionFields['DisplayName'] ?? $regionFields['Name'] ?? null);
+        $externalId = $this->getValue($regionFields['ID'] ?? null);
+        $code = $this->getValue($regionFields['Code'] ?? null);
 
         $cacheKey = $externalId ?? $code ?? $name;
 
@@ -695,7 +697,7 @@ final class CustomerImporter
 
             $languageCode = substr($key, 5);
             $languageId = $this->languageIdForSuffix($languageCode);
-            $name = $this->stringOrNull(is_scalar($value) ? (string) $value : null);
+            $name = $this->getValue(is_scalar($value) ? (string) $value : null);
 
             if ($languageId === null || $name === null) {
                 continue;
@@ -743,11 +745,11 @@ final class CustomerImporter
         return $this->languagesByLocale;
     }
 
-    private function looksLikeAddress(array $fields): bool
+    private function isValidAddress(array $fields): bool
     {
-        $street = $this->stringOrNull($fields['Strasse1'] ?? null);
-        $zip = $this->stringOrNull($fields['PLZ'] ?? null);
-        $city = $this->stringOrNull($fields['Ort'] ?? null);
+        $street = $this->getValue($fields['Strasse1'] ?? null);
+        $zip = $this->getValue($fields['PLZ'] ?? null);
+        $city = $this->getValue($fields['Ort'] ?? null);
 
         return $street !== null && $zip !== null && $city !== null;
     }
@@ -765,49 +767,49 @@ final class CustomerImporter
         }
 
         if (in_array('first_name', $columns, true)) {
-            $firstName = $this->stringOrNull($fields['Name2'] ?? $fields['Name1'] ?? null);
+            $firstName = $this->getValue($fields['Name2'] ?? $fields['Name1'] ?? null);
             if ($firstName !== null) {
                 $attributes['first_name'] = $firstName;
             }
         }
 
         if (in_array('last_name', $columns, true)) {
-            $lastName = $this->stringOrNull($fields['Name1'] ?? $fields['Name2'] ?? null);
+            $lastName = $this->getValue($fields['Name1'] ?? $fields['Name2'] ?? null);
             if ($lastName !== null) {
                 $attributes['last_name'] = $lastName;
             }
         }
 
         if (in_array('zipcode', $columns, true)) {
-            $zip = $this->stringOrNull($fields['PLZ'] ?? null);
+            $zip = $this->getValue($fields['PLZ'] ?? null);
             if ($zip !== null) {
                 $attributes['zipcode'] = $zip;
             }
         }
 
         if (in_array('city', $columns, true)) {
-            $city = $this->stringOrNull($fields['Ort'] ?? null);
+            $city = $this->getValue($fields['Ort'] ?? null);
             if ($city !== null) {
                 $attributes['city'] = $city;
             }
         }
 
         if (in_array('street', $columns, true)) {
-            $street = $this->stringOrNull($fields['Strasse1'] ?? null);
+            $street = $this->getValue($fields['Strasse1'] ?? null);
             if ($street !== null) {
                 $attributes['street'] = $street;
             }
         }
 
         if (in_array('additional_address_line_1', $columns, true)) {
-            $additional = $this->stringOrNull($fields['Strasse2'] ?? null);
+            $additional = $this->getValue($fields['Strasse2'] ?? null);
             if ($additional !== null) {
                 $attributes['additional_address_line_1'] = $additional;
             }
         }
 
         if (in_array('phone_number', $columns, true)) {
-            $phone = $this->stringOrNull($fields['Telefon'] ?? $fields['Festnetztelefon'] ?? $fields['Mobiltelefon'] ?? null);
+            $phone = $this->getValue($fields['Telefon'] ?? $fields['Festnetztelefon'] ?? $fields['Mobiltelefon'] ?? null);
             if ($phone !== null) {
                 $attributes['phone_number'] = $phone;
             }
@@ -821,14 +823,14 @@ final class CustomerImporter
         }
 
         if (in_array('vat_id', $columns, true)) {
-            $vat = $this->stringOrNull($fields['UStIDNummer'] ?? $fields['MwStNummer'] ?? null);
+            $vat = $this->getValue($fields['UStIDNummer'] ?? $fields['MwStNummer'] ?? null);
             if ($vat !== null) {
                 $attributes['vat_id'] = $vat;
             }
         }
 
         if (in_array('country_id', $columns, true)) {
-            $iso = $this->stringOrNull($fields['Land.ISOCode'] ?? $fields['CountryISO'] ?? null);
+            $iso = $this->getValue($fields['Land.ISOCode'] ?? $fields['CountryISO'] ?? null);
             if ($iso !== null) {
                 $countryId = $this->resolveCountryId($iso);
                 if ($countryId !== null) {
@@ -839,9 +841,9 @@ final class CustomerImporter
 
         if (in_array('custom_fields', $columns, true)) {
             $customFields = $this->encodeCustomFields([
-                'status' => $this->stringOrNull($fields['Status'] ?? null),
-                'notes' => $this->stringOrNull($fields['Bemerkungen'] ?? null),
-                'raw_id' => $this->stringOrNull(isset($fields['ID']) ? (string) $fields['ID'] : null),
+                'status' => $this->getValue($fields['Status'] ?? null),
+                'notes' => $this->getValue($fields['Bemerkungen'] ?? null),
+                'raw_id' => $this->getValue(isset($fields['ID']) ? (string) $fields['ID'] : null),
                 'type' => $type,
             ]);
 
@@ -918,7 +920,7 @@ final class CustomerImporter
         Log::channel(self::LOG_CHANNEL)->error($message, $context);
     }
 
-    private function stringOrNull(mixed $value): ?string
+    private function getValue(mixed $value): ?string
     {
         if ($value === null) {
             return null;
@@ -999,7 +1001,7 @@ final class CustomerImporter
 
     private function formatUuid(mixed $value): ?string
     {
-        $raw = $this->stringOrNull($value);
+        $raw = $this->getValue($value);
         if ($raw === null) {
             return null;
         }
