@@ -363,14 +363,18 @@ final class CustomerImporter
             return;
         }
 
-        $search = ['customer_id' => $customer->id];
         $data = $attributes;
+        $search = [];
 
         if (array_key_exists('id', $attributes)) {
             $search['id'] = $attributes['id'];
-        } elseif (isset($attributes['street'], $attributes['zipcode'])) {
-            $search['street'] = $attributes['street'];
-            $search['zipcode'] = $attributes['zipcode'];
+        } else {
+            $search['customer_id'] = $customer->id;
+
+            if (isset($attributes['street'], $attributes['zipcode'])) {
+                $search['street'] = $attributes['street'];
+                $search['zipcode'] = $attributes['zipcode'];
+            }
         }
 
         if (! array_key_exists('id', $attributes)) {
