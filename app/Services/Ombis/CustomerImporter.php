@@ -95,14 +95,20 @@ final class CustomerImporter
         $customerNumber = $this->getValue($detailsFields['Nummer'] ?? null);
 
         if ($customerNumber === null) {
-            $warning = sprintf('Customer %d missing Nummer. Using folder id as identifier.', $customerId);
+            $warning = sprintf('Customer %d missing Nummer. Skipping import.', $customerId);
             $result->warnings[] = $warning;
-            $this->logWarning('Ombis customer missing Nummer.', [
+            $this->logWarning('Ombis customer missing Nummer. Skipping import.', [
                 'customer_id' => $customerId,
                 'path' => $directory . '/' . self::DETAILS_FILE,
             ]);
 
-            $customerNumber = (string) $customerId;
+            $this->setSection($result, 'billing', 'warning', 'missing customer number');
+            $this->setSection($result, 'shipping', 'warning', 'missing customer number');
+            $this->setSection($result, 'payment', 'warning', 'missing customer number');
+            $this->setSection($result, 'currency', 'warning', 'missing customer number');
+
+            return $result;
+
         }
 
         $billingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::BILLING_FILE, 'billing');
