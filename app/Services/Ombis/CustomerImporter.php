@@ -27,6 +27,7 @@ final class CustomerImporter
 {
     private const LOG_CHANNEL = 'ombis-sdk';
     private const BASE_PATH = 'ombis_customers/upload';
+    private const DETAILS_FILE = 'customer-details.json';
     private const BILLING_FILE = 'refs/billing_address.json';
     private const BILLING_REFERENCES_FILE = 'refs/billing_address_references.json';
     private const SHIPPING_FILE = 'refs/shipping_address.json';
@@ -90,6 +91,20 @@ final class CustomerImporter
             return $result;
         }
 
+        $detailsFields = $this->loadCustomerDetails($result, $customerId, $directory . '/' . self::DETAILS_FILE);
+        $customerNumber = $this->getValue($detailsFields['Nummer'] ?? null);
+
+        if ($customerNumber === null) {
+            $warning = sprintf('Customer %d missing Nummer. Using folder id as identifier.', $customerId);
+            $result->warnings[] = $warning;
+            $this->logWarning('Ombis customer missing Nummer.', [
+                'customer_id' => $customerId,
+                'path' => $directory . '/' . self::DETAILS_FILE,
+            ]);
+
+            $customerNumber = (string) $customerId;
+        }
+
         $billingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::BILLING_FILE, 'billing');
         $billingReferencesPayload = $this->loadAddressReferences($result, $customerId, $directory . '/' . self::BILLING_REFERENCES_FILE);
         $shippingPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::SHIPPING_FILE, 'shipping');
@@ -111,8 +126,8 @@ final class CustomerImporter
         $currencyFields = $this->extractFields($currencyPayload);
 
         try {
-            $this->databaseManager->connection()->transaction(function () use ($customerId, $billingFields, $shippingFields, $paymentFields, $currencyFields, $result): void {
-                $customer = $this->upsertCustomer($customerId, $billingFields, $result);
+            $this->databaseManager->connection()->transaction(function () use ($customerId, $billingFields, $shippingFields, $paymentFields, $currencyFields, $result, $customerNumber): void {
+                $customer = $this->upsertCustomer($customerId, $billingFields, $result, $customerNumber);
 
                 if ($customer === null) {
                     if ($billingFields !== null) {
@@ -210,11 +225,11 @@ final class CustomerImporter
         return $summary;
     }
 
-    private function upsertCustomer(int $customerId, ?array $billingFields, ImportResultDTO $result): ?PimCustomer
+    private function upsertCustomer(int $customerId, ?array $billingFields, ImportResultDTO $result, string $customerNumber): ?PimCustomer
     {
         /** @var PimCustomer $existing */
-        $existing = PimCustomer::query()->where('identifier', (string) $customerId)->first();
-        $attributes = $this->mapToCustomer($customerId, $billingFields);
+        $existing = PimCustomer::query()->where('identifier', $customerNumber)->first();
+        $attributes = $this->mapToCustomer($customerId, $billingFields, $customerNumber);
 
         $missingFields = $this->missingCustomerFields($attributes);
         if ($existing === null && $missingFields !== []) {
@@ -259,13 +274,13 @@ final class CustomerImporter
         return $existing;
     }
 
-    private function mapToCustomer(int $customerId, ?array $billingFields): array
+    private function mapToCustomer(int $customerId, ?array $billingFields, string $customerNumber): array
     {
         $columns = $this->getCustomerColumns();
         $attributes = [];
 
         if (in_array('identifier', $columns, true)) {
-            $attributes['identifier'] = (string) $customerId;
+            $attributes['identifier'] = $customerNumber;
         }
 
         if ($billingFields !== null) {
@@ -522,6 +537,37 @@ final class CustomerImporter
         }
 
         return $this->filterNullValues($attributes);
+    }
+
+    private function loadCustomerDetails(ImportResultDTO $result, int $customerId, string $path): ?array
+    {
+        $disk = Storage::disk('local');
+        if (! $disk->exists($path)) {
+            $message = sprintf('%s missing for customer %d.', basename($path), $customerId);
+            $result->warnings[] = $message;
+            $this->logWarning('Ombis customer details file missing.', [
+                'customer_id' => $customerId,
+                'path' => $path,
+            ]);
+
+            return null;
+        }
+
+        $payload = $this->readJsonOrNull($path, $customerId);
+        if ($payload === null) {
+            $result->warnings[] = sprintf('Unable to read %s for customer %d.', basename($path), $customerId);
+
+            return null;
+        }
+
+        $fields = $this->extractFields($payload);
+        if ($fields === null) {
+            $result->warnings[] = sprintf('Invalid customer details structure for %d.', $customerId);
+
+            return null;
+        }
+
+        return $fields;
     }
 
     private function loadJsonForSection(ImportResultDTO $result, int $customerId, string $path, string $section): ?array
