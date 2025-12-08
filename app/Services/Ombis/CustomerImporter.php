@@ -299,7 +299,7 @@ final class CustomerImporter
 
             if (in_array('last_name', $columns, true)) {
                 $lastName = $this->getValue($billingFields['Name2'] ?? null);
-                if (isset($firstName) && $firstName === $lastName) {
+                if (!$lastName) {
                     $lastName = '&nbsp;';
                 }
 
