@@ -37,6 +37,8 @@ class ImportCustomerReferencesCommand extends Command
 
     private const REFERENCES_FILE = 'references.json';
 
+    private const LEGAL_INFORMATION_FILE = 'legal_information.json';
+
     private Ombis $connector;
 
     private array $cachePaymentMethod = [];
@@ -47,6 +49,7 @@ class ImportCustomerReferencesCommand extends Command
     private array $cacheAddressReferenceByUri = [];
     private array $cacheAddressReferenceByCustomerAndName = [];
     private array $cacheLandRegionByLandAndRegion = [];
+    private array $cacheLegalInformationByCustomer = [];
 
     public function handle(): int
     {
@@ -109,6 +112,7 @@ class ImportCustomerReferencesCommand extends Command
             $shipping = $this->fetchShippingAddress($customerId, $folderName, $fields);
             $shippingReferences = $this->fetchShippingAddressReferences($shipping, $folderName, $customerId);
             $delivery = $this->fetchDeliveryAddresses($deliveryReferences, $folderName);
+            $legalInformation = $this->fetchLegalInformation($customerId, $folderName);
 
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::PAYMENT_METHOD_FILE, $paymentMethod, $folderName, 'payment method');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::CURRENCY_FILE, $currency, $folderName, 'currency');
@@ -117,6 +121,7 @@ class ImportCustomerReferencesCommand extends Command
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::SHIPPING_ADDRESS_FILE, $shipping, $folderName, 'shipping address');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::SHIPPING_ADDRESS_REFERENCES_FILE, $shippingReferences, $folderName, 'shipping address references');
             $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::DELIVERY_ADDRESSES_FILE, $delivery, $folderName, 'delivery addresses');
+            $this->writeResource($refsRelativePath . DIRECTORY_SEPARATOR . self::LEGAL_INFORMATION_FILE, $legalInformation, $folderName, 'legal information');
 
             $references = [
                 'payment_method' => $paymentMethod,
@@ -126,6 +131,7 @@ class ImportCustomerReferencesCommand extends Command
                 'shipping_address' => $shipping,
                 'shipping_address_references' => $shippingReferences,
                 'delivery_addresses' => $delivery,
+                'legal_information' => $legalInformation,
             ];
 
             $this->writeSummary($refsRelativePath . DIRECTORY_SEPARATOR . self::REFERENCES_FILE, $references, $folderName);
@@ -442,6 +448,20 @@ class ImportCustomerReferencesCommand extends Command
         return $addresses === [] ? null : $addresses;
     }
 
+    private function fetchLegalInformation(int|string $customerId, string $folderName): ?array
+    {
+        $resource = $this->getLegalInformation($customerId, 200);
+
+        if ($resource === null) {
+            Log::warning('Invalid response received for Ombis customer reference.', [
+                'customer_folder' => $folderName,
+                'resource' => 'legal information',
+            ]);
+        }
+
+        return $resource;
+    }
+
     private function toArray(mixed $data): ?array
     {
         if (is_array($data)) {
@@ -496,6 +516,45 @@ class ImportCustomerReferencesCommand extends Command
 
         $decoded = $this->toArray($raw);
         $this->cachePaymentMethod[$key] = $decoded;
+
+        if ($sleepMs > 0) {
+            usleep($sleepMs * 1000);
+        }
+
+        return $decoded;
+    }
+
+    private function getLegalInformation(int|string $customerId, int $sleepMs = 0): ?array
+    {
+        $key = (string)$customerId;
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (array_key_exists($key, $this->cacheLegalInformationByCustomer)) {
+            return $this->cacheLegalInformationByCustomer[$key];
+        }
+
+        try {
+            $raw = $this->connector->legalInformation($customerId);
+        } catch (Throwable $exception) {
+            Log::warning('Ombis legal information request failed', [
+                'customer_id' => $customerId,
+                'err' => $exception->getMessage(),
+            ]);
+
+            $this->cacheLegalInformationByCustomer[$key] = null;
+
+            if ($sleepMs > 0) {
+                usleep($sleepMs * 1000);
+            }
+
+            return null;
+        }
+
+        $decoded = $this->toArray($raw);
+        $this->cacheLegalInformationByCustomer[$key] = $decoded;
 
         if ($sleepMs > 0) {
             usleep($sleepMs * 1000);

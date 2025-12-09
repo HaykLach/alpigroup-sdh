@@ -34,6 +34,7 @@ final class CustomerImporter
     private const SHIPPING_REFERENCES_FILE = 'refs/shipping_address_references.json';
     private const PAYMENT_FILE = 'refs/payment_method.json';
     private const CURRENCY_FILE = 'refs/currency.json';
+    private const LEGAL_INFORMATION_FILE = 'refs/legal_information.json';
 
     /**
      * @var array<int, string>|null
@@ -117,12 +118,14 @@ final class CustomerImporter
         $shippingReferencesPayload = $this->loadAddressReferences($result, $customerId, $directory . '/' . self::SHIPPING_REFERENCES_FILE);
         $paymentPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::PAYMENT_FILE, 'payment');
         $currencyPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::CURRENCY_FILE, 'currency');
+        $legalInformationPayload = $this->loadJsonForSection($result, $customerId, $directory . '/' . self::LEGAL_INFORMATION_FILE, 'legal');
 
         $billingFields = $this->extractFields($billingPayload);
         $billingReferenceFields = $this->extractReferenceFields($billingReferencesPayload);
         if ($billingReferenceFields !== []) {
             $billingFields = $this->mergeAddressFieldsWithReferences($billingFields, $billingReferenceFields);
         }
+        $legalInformationFields = $this->extractFields($legalInformationPayload);
         $shippingFields = $this->extractFields($shippingPayload);
         $shippingReferenceFields = $this->extractReferenceFields($shippingReferencesPayload);
         if ($shippingReferenceFields !== [] && $shippingFields !== null) {
@@ -131,9 +134,28 @@ final class CustomerImporter
         $paymentFields = $this->extractFields($paymentPayload);
         $currencyFields = $this->extractFields($currencyPayload);
 
+        $legalEmail = $this->getValue($legalInformationFields['KommunikationsinfoEC'] ?? null);
+
+        if ($legalEmail === null) {
+            $warning = sprintf('Customer %d missing email. Skipping import.', $customerId);
+            $result->warnings[] = $warning;
+            $this->logWarning('Ombis customer missing email. Skipping import.', [
+                'customer_id' => $customerId,
+                'path' => $directory . '/' . self::LEGAL_INFORMATION_FILE,
+            ]);
+
+            $this->setSection($result, 'billing', 'warning', 'missing email');
+            $this->setSection($result, 'shipping', 'warning', 'missing email');
+            $this->setSection($result, 'payment', 'warning', 'missing email');
+            $this->setSection($result, 'currency', 'warning', 'missing email');
+            $this->setSection($result, 'legal', 'warning', 'missing email');
+
+            return $result;
+        }
+
         try {
-            $this->databaseManager->connection()->transaction(function () use ($customerId, $billingFields, $shippingFields, $paymentFields, $currencyFields, $result, $customerNumber): void {
-                $customer = $this->upsertCustomer($customerId, $billingFields, $result, $customerNumber);
+            $this->databaseManager->connection()->transaction(function () use ($customerId, $billingFields, $shippingFields, $paymentFields, $currencyFields, $result, $customerNumber, $legalEmail): void {
+                $customer = $this->upsertCustomer($customerId, $billingFields, $result, $customerNumber, $legalEmail);
 
                 if ($customer === null) {
                     if ($billingFields !== null) {
@@ -231,11 +253,11 @@ final class CustomerImporter
         return $summary;
     }
 
-    private function upsertCustomer(int $customerId, ?array $billingFields, ImportResultDTO $result, string $customerNumber): ?PimCustomer
+    private function upsertCustomer(int $customerId, ?array $billingFields, ImportResultDTO $result, string $customerNumber, string $email): ?PimCustomer
     {
         /** @var PimCustomer $existing */
         $existing = PimCustomer::query()->where('identifier', $customerNumber)->first();
-        $attributes = $this->mapToCustomer($customerId, $billingFields, $customerNumber);
+        $attributes = $this->mapToCustomer($customerId, $billingFields, $customerNumber, $email);
 
         $missingFields = $this->missingCustomerFields($attributes);
         if ($existing === null && $missingFields !== []) {
@@ -280,7 +302,7 @@ final class CustomerImporter
         return $existing;
     }
 
-    private function mapToCustomer(int $customerId, ?array $billingFields, string $customerNumber): array
+    private function mapToCustomer(int $customerId, ?array $billingFields, string $customerNumber, string $email): array
     {
         $columns = $this->getCustomerColumns();
         $attributes = [];
@@ -305,13 +327,10 @@ final class CustomerImporter
 
                 $attributes['last_name'] = $lastName;
             }
+        }
 
-            if (in_array('email', $columns, true)) {
-                $email = $this->getValue($billingFields['EMail'] ?? null);
-                if ($email !== null) {
-                    $attributes['email'] = $email;
-                }
-            }
+        if (in_array('email', $columns, true)) {
+            $attributes['email'] = $email;
         }
 
         if (in_array('custom_fields', $columns, true)) {
